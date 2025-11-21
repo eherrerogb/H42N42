@@ -6,13 +6,19 @@ let%client application_name = Eliom_client.get_application_name ()
 
 module%shared Html = Eliom_content.Html.D
 
-type%shared creet_spec = { id : int; x : int; y : int }
+type%shared creet_spec = {
+  id : int;
+  x : float;
+  y : float;
+  dir_x : float;
+  dir_y : float;
+}
 
 let%shared initial_creets =
   [
-    { id = 1; x = 40; y = 60 };
-    { id = 2; x = 160; y = 140 };
-    { id = 3; x = 280; y = 90 };
+    { id = 1; x = 40.; y = 60.; dir_x = 1.; dir_y = 0.3 };
+    { id = 2; x = 160.; y = 140.; dir_x = -0.6; dir_y = 0.9 };
+    { id = 3; x = 280.; y = 90.; dir_x = 0.2; dir_y = -1. };
   ]
 
 (* Create a module for the application. See
@@ -27,21 +33,6 @@ module%shared App = Eliom_registration.App (struct
    update the <head> of the page when changing page. (This also avoids
    blinking when changing page in iOS). *)
 let%client _ = Eliom_client.persist_document_head ()
-
-module%client Game_loop = struct
-  open Js_of_ocaml
-  open Js_of_ocaml_lwt
-  open Lwt.Infix
-
-  let frame_duration = 0.5
-
-  let rec tick count =
-    let message = Printf.sprintf "Creet loop tick: %d" count in
-    Firebug.console##log (Js.string message);
-    Lwt_js.sleep frame_duration >>= fun () -> tick (succ count)
-
-  let start () = Lwt.async (fun () -> tick 0)
-end
 
 module%client Map_canvas = struct
   open Js_of_ocaml
@@ -58,22 +49,124 @@ end
 module%client Creet = struct
   open Js_of_ocaml
 
+  let normalize dx dy =
+    let mag = sqrt ((dx *. dx) +. (dy *. dy)) in
+    if mag = 0. then (1., 0.) else (dx /. mag, dy /. mag)
+
   type t = {
     spec : creet_spec;
     node : Dom_html.divElement Js.t;
+    mutable x : float;
+    mutable y : float;
+    mutable dir_x : float;
+    mutable dir_y : float;
   }
 
-  let create_node spec =
+  let create_node (spec : creet_spec) =
     let node = Dom_html.createDiv Dom_html.document in
     node##.className := Js.string "creet";
-    node##.style##.left := Js.string (Printf.sprintf "%dpx" spec.x);
-    node##.style##.top := Js.string (Printf.sprintf "%dpx" spec.y);
+    node##.style##.left := Js.string (Printf.sprintf "%gpx" spec.x);
+    node##.style##.top := Js.string (Printf.sprintf "%gpx" spec.y);
     node
 
-  let spawn spec map_container =
-    let node = create_node spec in
+  let spawn (config : creet_spec) map_container =
+    let node = create_node config in
+    node##.style##.left := Js.string (Printf.sprintf "%gpx" config.x);
+    node##.style##.top := Js.string (Printf.sprintf "%gpx" config.y);
     Dom.appendChild map_container node;
-    { spec; node }
+    let dir_x, dir_y = normalize config.dir_x config.dir_y in
+    {
+      spec = config;
+      node;
+      x = config.x;
+      y = config.y;
+      dir_x;
+      dir_y;
+    }
+
+  let update_position creet =
+    creet.node##.style##.left := Js.string (Printf.sprintf "%gpx" creet.x);
+    creet.node##.style##.top := Js.string (Printf.sprintf "%gpx" creet.y)
+end
+
+module%client State = struct
+  let active_creets : Creet.t list ref = ref []
+end
+
+module%client Game_loop = struct
+  open Js_of_ocaml_lwt
+  open Lwt.Infix
+
+  let frame_duration = 0.02
+  let speed = 60.
+  let map_width = 420.
+  let map_height = 260.
+  let creet_size = 24.
+
+  let min_x = 0.
+  let min_y = 0.
+  let max_x = map_width -. creet_size
+  let max_y = map_height -. creet_size
+
+  let clamp v low high =
+    max low (min v high)
+
+  let normalize dx dy =
+    let mag = sqrt ((dx *. dx) +. (dy *. dy)) in
+    if mag = 0. then (1., 0.) else (dx /. mag, dy /. mag)
+
+  let pick_perpendicular x y (dx, dy) =
+    let clockwise = (dy, -.dx) in
+    let counter = (-.dy, dx) in
+    let step = 1. in
+    let inside (cx, cy) =
+      cx >= min_x && cx <= max_x && cy >= min_y && cy <= max_y
+    in
+    let x1 = clamp (x +. fst clockwise *. step) min_x max_x in
+    let y1 = clamp (y +. snd clockwise *. step) min_y max_y in
+    let x2 = clamp (x +. fst counter *. step) min_x max_x in
+    let y2 = clamp (y +. snd counter *. step) min_y max_y in
+    match (inside (x1, y1), inside (x2, y2)) with
+    | true, _ -> clockwise
+    | false, true -> counter
+    | false, false -> clockwise
+
+  let bounce (creet : Creet.t) =
+    let dir = pick_perpendicular creet.x creet.y (creet.dir_x, creet.dir_y) in
+    let dir = normalize (fst dir) (snd dir) in
+    creet.dir_x <- fst dir;
+    creet.dir_y <- snd dir
+
+  let handle_bounds (creet : Creet.t) =
+    let hit_x =
+      if creet.x <= min_x && creet.dir_x < 0. then true
+      else if creet.x >= max_x && creet.dir_x > 0. then true
+      else false
+    in
+    let hit_y =
+      if creet.y <= min_y && creet.dir_y < 0. then true
+      else if creet.y >= max_y && creet.dir_y > 0. then true
+      else false
+    in
+    if hit_x || hit_y then (
+      bounce creet;
+      creet.x <- clamp creet.x min_x max_x;
+      creet.y <- clamp creet.y min_y max_y)
+
+  let advance (creet : Creet.t) =
+    let step = speed *. frame_duration in
+    creet.x <- creet.x +. (creet.dir_x *. step);
+    creet.y <- creet.y +. (creet.dir_y *. step);
+    creet.x <- clamp creet.x min_x max_x;
+    creet.y <- clamp creet.y min_y max_y;
+    handle_bounds creet;
+    Creet.update_position creet
+
+  let rec tick () =
+    List.iter advance !(State.active_creets);
+    Lwt_js.sleep frame_duration >>= tick
+
+  let start () = Lwt.async (fun () -> tick ())
 end
 
 module%client World = struct
@@ -91,10 +184,9 @@ module%client World = struct
     | Some root ->
         let map = Map_canvas.create_empty () in
         Dom.appendChild root map;
-        let _active_creets =
-          let shared_creets = ~%initial_creets in
-          List.map (fun spec -> Creet.spawn spec map) shared_creets
-        in
+        let shared_creets = ~%initial_creets in
+        State.active_creets :=
+          List.map (fun spec -> Creet.spawn spec map) shared_creets;
         Game_loop.start ()
 end
 
