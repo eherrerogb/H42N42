@@ -39,6 +39,7 @@ module%client Config = struct
   let initial_chance = -10.
   let step = 5.
   let max_chance = 40.
+  let reproduction_chance = 5.
   
   (* Game loop settings *)
   let frame_duration = 0.02
@@ -81,6 +82,7 @@ module%client Creet = struct
     mutable dir_x : float;
     mutable dir_y : float;
     mutable time_since_last_change : float;
+    mutable reproduction_timer : float;
   }
 
   let create_node (spec : creet_spec) =
@@ -104,6 +106,7 @@ module%client Creet = struct
       dir_x;
       dir_y;
       time_since_last_change = 0.;
+      reproduction_timer = 0.;
     }
 
   let update_position creet =
@@ -112,7 +115,30 @@ module%client Creet = struct
 end
 
 module%client State = struct
+  open Js_of_ocaml
   let active_creets : Creet.t list ref = ref []
+  let map_container : Dom_html.divElement Js.t option ref = ref None
+  let next_id = ref 0
+
+  let register_map map = map_container := Some map
+  let set_creets creets = active_creets := creets
+
+  let set_next_id value = next_id := value
+
+  let fresh_id () =
+    let id = !next_id in
+    incr next_id;
+    id
+
+  let add_creet creet = active_creets := creet :: !active_creets
+
+  let spawn_spec spec =
+    match !map_container with
+    | None -> None
+    | Some map ->
+        let creet = Creet.spawn spec map in
+        add_creet creet;
+        Some creet
 end
 
 module%client Game_loop = struct
@@ -137,8 +163,7 @@ module%client Game_loop = struct
     if hit_y then creet.dir_y <- -.creet.dir_y;
     let dir_x, dir_y = normalize creet.dir_x creet.dir_y in
     creet.dir_x <- dir_x;
-    creet.dir_y <- dir_y;
-    creet.time_since_last_change <- 0.
+    creet.dir_y <- dir_y
 
   let random_direction () =
     let angle = (Js.math##random) *. 2. *. 3.141592653589793 in
@@ -158,6 +183,27 @@ module%client Game_loop = struct
     creet.dir_y <- dir_y;
     creet.time_since_last_change <- 0.
 
+  let attempt_reproduction (creet : Creet.t) =
+    creet.reproduction_timer <- creet.reproduction_timer +. Config.frame_duration;
+    let rec loop () =
+      if creet.reproduction_timer >= 1. then (
+        creet.reproduction_timer <- creet.reproduction_timer -. 1.;
+        let roll = (Js.math##random) *. 100. in
+        if roll < Config.reproduction_chance then (
+          let dir_x, dir_y = random_direction () in
+          let spec =
+            {
+              id = State.fresh_id ();
+              x = creet.x;
+              y = creet.y;
+              dir_x;
+              dir_y;
+            }
+          in
+          ignore (State.spawn_spec spec));
+        loop ())
+    in
+    loop ()
   let handle_bounds (creet : Creet.t) =
     let hit_x =
       if creet.x <= min_x && creet.dir_x < 0. then true
@@ -177,6 +223,7 @@ module%client Game_loop = struct
   let advance (creet : Creet.t) =
     creet.time_since_last_change <- creet.time_since_last_change +. Config.frame_duration;
     if should_turn creet then random_turn creet;
+    attempt_reproduction creet;
     let step = Config.speed *. Config.frame_duration in
     creet.x <- creet.x +. (creet.dir_x *. step);
     creet.y <- creet.y +. (creet.dir_y *. step);
@@ -207,9 +254,14 @@ module%client World = struct
     | Some root ->
         let map = Map_canvas.create_empty () in
         Dom.appendChild root map;
+        State.register_map map;
         let shared_creets = ~%initial_creets in
-        State.active_creets :=
-          List.map (fun spec -> Creet.spawn spec map) shared_creets;
+        let next_id =
+          List.fold_left (fun acc spec -> max acc spec.id) 0 shared_creets + 1
+        in
+        State.set_next_id next_id;
+        let creets = List.map (fun spec -> Creet.spawn spec map) shared_creets in
+        State.set_creets creets;
         Game_loop.start ()
 end
 
