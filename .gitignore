@@ -17,7 +17,6 @@ cordova
 .sass-cache
 
 static/css/creet_app.css.map
-static/css/creet_app.css
 
 # Dune
 _build
