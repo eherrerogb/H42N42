@@ -187,9 +187,12 @@ end
 module%client Interaction = struct
   open Js_of_ocaml
   open Js_of_ocaml_lwt
+  open Lwt.Infix
 
   let grabbed_creet : Creet.t option ref = ref None
   let grab_offset : (float * float) option ref = ref None
+  let has_dragged : bool ref = ref false
+  let just_released : bool ref = ref false
 
   let get_map_position (ev : Dom_html.mouseEvent Js.t) =
     match !(State.map_container) with
@@ -216,17 +219,25 @@ module%client Interaction = struct
         Creet.set_grabbed creet false;
         grabbed_creet := None;
         grab_offset := None;
+        has_dragged := false;
+        just_released := true;
+        Lwt.async (fun () ->
+            Lwt_js.yield () >|= fun () -> just_released := false);
         match !(State.map_container) with
         | None -> ()
         | Some map -> map##.classList##remove (Js.string "grabbing")
 
   let handle_click (ev : Dom_html.mouseEvent Js.t) =
-    match get_map_position ev with
-    | None -> ()
-    | Some (x, y) -> (
-        match !grabbed_creet with
-        | Some _ -> release_creet ()
-        | None -> (
+    if !just_released then (
+      just_released := false;
+      ())
+    else
+      match get_map_position ev with
+      | None -> ()
+      | Some (x, y) -> (
+          match !grabbed_creet with
+          | Some _ -> release_creet ()
+          | None -> (
             let creets = List.rev !(State.active_creets) in
             match Creet.find_at_position x y creets with
             | None -> ()
@@ -235,6 +246,7 @@ module%client Interaction = struct
                   let offset_x = x -. creet.x in
                   let offset_y = y -. creet.y in
                   grab_offset := Some (offset_x, offset_y);
+                  has_dragged := false;
                   Creet.set_grabbed creet true;
                   grabbed_creet := Some creet;
                   match !(State.map_container) with
@@ -245,6 +257,7 @@ module%client Interaction = struct
     match !grabbed_creet with
     | None -> ()
     | Some creet -> (
+        has_dragged := true;
         match get_map_position ev with
         | None -> release_creet ()
         | Some (mouse_x, mouse_y) -> (
@@ -276,9 +289,10 @@ module%client Interaction = struct
             Lwt.return_unit));
     Lwt.async (fun () ->
         Lwt_js_events.mouseups map_element (fun _ev _ ->
-            (match !grabbed_creet with
-            | Some _ -> release_creet ()
-            | None -> ());
+            if !has_dragged then (
+              match !grabbed_creet with
+              | Some _ -> release_creet ()
+              | None -> ());
             Lwt.return_unit))
 end
 
