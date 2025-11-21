@@ -52,6 +52,7 @@ module%client Config = struct
   (* Movement settings *)
   let speed = 60.
   let sick_speed_modifier = 0.85
+  let speed_increment_per_second = 0.01
   
   (* Map dimensions *)
   let map_width = 420.
@@ -346,6 +347,8 @@ module%client Game_loop = struct
   open Js_of_ocaml_lwt
   open Lwt.Infix
 
+  let elapsed_time : float ref = ref 0.
+
   let min_x = 0.
   let min_y = 0.
   let max_x = Config.map_width -. Config.creet_size
@@ -427,7 +430,8 @@ module%client Game_loop = struct
       creet.time_since_last_change <- creet.time_since_last_change +. Config.frame_duration;
       if should_turn creet then random_turn creet;
       attempt_reproduction creet;
-      let step = Config.speed *. (if creet.status = Sick then Config.sick_speed_modifier else 1.) *. Config.frame_duration in
+      let current_speed = Config.speed +. (Config.speed_increment_per_second *. !elapsed_time) in
+      let step = current_speed *. (if creet.status = Sick then Config.sick_speed_modifier else 1.) *. Config.frame_duration in
       creet.x <- creet.x +. (creet.dir_x *. step);
       creet.y <- creet.y +. (creet.dir_y *. step);
       creet.x <- clamp creet.x min_x max_x;
@@ -436,6 +440,7 @@ module%client Game_loop = struct
       Creet.update_position creet)
 
   let rec tick () =
+    elapsed_time := !elapsed_time +. Config.frame_duration;
     List.iter advance !(State.active_creets);
     Counters.update ();
     Lwt_js.sleep Config.frame_duration >>= tick
