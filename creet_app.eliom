@@ -164,6 +164,42 @@ module%client State = struct
         Some creet
 end
 
+module%client Counters = struct
+  open Js_of_ocaml
+
+  let healthy_counter_id = "healthy-counter"
+  let sick_counter_id = "sick-counter"
+
+  let update () =
+    let creets : Creet.t list = !(State.active_creets) in
+    let healthy_count =
+      List.fold_left
+        (fun acc (creet : Creet.t) ->
+          if creet.status = Healthy then acc + 1 else acc)
+        0 creets
+    in
+    let sick_count =
+      List.fold_left
+        (fun acc (creet : Creet.t) ->
+          if creet.status = Sick then acc + 1 else acc)
+        0 creets
+    in
+    let healthy_elem =
+      Js.Opt.to_option
+        (Dom_html.document##getElementById (Js.string healthy_counter_id))
+    in
+    let sick_elem =
+      Js.Opt.to_option
+        (Dom_html.document##getElementById (Js.string sick_counter_id))
+    in
+    match (healthy_elem, sick_elem) with
+    | Some h, Some s ->
+        h##.textContent :=
+          Js.some (Js.string (string_of_int healthy_count));
+        s##.textContent := Js.some (Js.string (string_of_int sick_count))
+    | _ -> ()
+end
+
 module%client Game_loop = struct
   open Js_of_ocaml
   open Js_of_ocaml_lwt
@@ -257,6 +293,7 @@ module%client Game_loop = struct
 
   let rec tick () =
     List.iter advance !(State.active_creets);
+    Counters.update ();
     Lwt_js.sleep Config.frame_duration >>= tick
 
   let start () = Lwt.async (fun () -> tick ())
@@ -329,4 +366,16 @@ let%shared () =
                      (string_of_int (List.length initial_creets));
                  ]
                  [];
+               div
+                 ~a:[
+                   a_id "healthy-counter";
+                   a_class ["counter"; "counter--healthy"];
+                 ]
+                 [txt "0"];
+               div
+                 ~a:[
+                   a_id "sick-counter";
+                   a_class ["counter"; "counter--sick"];
+                 ]
+                 [txt "0"];
              ])))
