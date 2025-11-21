@@ -51,6 +51,7 @@ module%client Config = struct
   
   (* Movement settings *)
   let speed = 60.
+  let sick_speed_modifier = 0.85
   
   (* Map dimensions *)
   let map_width = 420.
@@ -283,7 +284,7 @@ module%client Game_loop = struct
     creet.time_since_last_change <- creet.time_since_last_change +. Config.frame_duration;
     if should_turn creet then random_turn creet;
     attempt_reproduction creet;
-    let step = Config.speed *. Config.frame_duration in
+    let step = Config.speed *. (if creet.status = Sick then Config.sick_speed_modifier else 1.) *. Config.frame_duration in
     creet.x <- creet.x +. (creet.dir_x *. step);
     creet.y <- creet.y +. (creet.dir_y *. step);
     creet.x <- clamp creet.x min_x max_x;
