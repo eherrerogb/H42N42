@@ -35,9 +35,23 @@ module%shared App = Eliom_registration.App (struct
 let%client _ = Eliom_client.persist_document_head ()
 
 module%client Config = struct
+  (* Random direction change settings *)
   let initial_chance = -10.
   let step = 5.
   let max_chance = 40.
+  
+  (* Game loop settings *)
+  let frame_duration = 0.02
+  
+  (* Movement settings *)
+  let speed = 60.
+  
+  (* Map dimensions *)
+  let map_width = 420.
+  let map_height = 260.
+  
+  (* Creet size *)
+  let creet_size = 24.
 end
 
 module%client Map_canvas = struct
@@ -106,16 +120,10 @@ module%client Game_loop = struct
   open Js_of_ocaml_lwt
   open Lwt.Infix
 
-  let frame_duration = 0.02
-  let speed = 60.
-  let map_width = 420.
-  let map_height = 260.
-  let creet_size = 24.
-
   let min_x = 0.
   let min_y = 0.
-  let max_x = map_width -. creet_size
-  let max_y = map_height -. creet_size
+  let max_x = Config.map_width -. Config.creet_size
+  let max_y = Config.map_height -. Config.creet_size
 
   let clamp v low high =
     max low (min v high)
@@ -167,9 +175,9 @@ module%client Game_loop = struct
       creet.y <- clamp creet.y min_y max_y)
 
   let advance (creet : Creet.t) =
-    creet.time_since_last_change <- creet.time_since_last_change +. frame_duration;
+    creet.time_since_last_change <- creet.time_since_last_change +. Config.frame_duration;
     if should_turn creet then random_turn creet;
-    let step = speed *. frame_duration in
+    let step = Config.speed *. Config.frame_duration in
     creet.x <- creet.x +. (creet.dir_x *. step);
     creet.y <- creet.y +. (creet.dir_y *. step);
     creet.x <- clamp creet.x min_x max_x;
@@ -179,7 +187,7 @@ module%client Game_loop = struct
 
   let rec tick () =
     List.iter advance !(State.active_creets);
-    Lwt_js.sleep frame_duration >>= tick
+    Lwt_js.sleep Config.frame_duration >>= tick
 
   let start () = Lwt.async (fun () -> tick ())
 end
