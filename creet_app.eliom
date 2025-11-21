@@ -6,19 +6,24 @@ let%client application_name = Eliom_client.get_application_name ()
 
 module%shared Html = Eliom_content.Html.D
 
+type%shared creet_status =
+  | Healthy
+  | Sick
+
 type%shared creet_spec = {
   id : int;
   x : float;
   y : float;
   dir_x : float;
   dir_y : float;
+  status : creet_status;
 }
 
 let%shared initial_creets =
   [
-    { id = 1; x = 40.; y = 60.; dir_x = 1.; dir_y = 0.3 };
-    { id = 2; x = 160.; y = 140.; dir_x = -0.6; dir_y = 0.9 };
-    { id = 3; x = 280.; y = 90.; dir_x = 0.2; dir_y = -1. };
+    { id = 1; x = 40.; y = 60.; dir_x = 1.; dir_y = 0.3; status = Healthy };
+    { id = 2; x = 160.; y = 140.; dir_x = -0.6; dir_y = 0.9; status = Healthy };
+    { id = 3; x = 280.; y = 90.; dir_x = 0.2; dir_y = -1.; status = Healthy };
   ]
 
 (* Create a module for the application. See
@@ -83,6 +88,7 @@ module%client Creet = struct
     mutable dir_y : float;
     mutable time_since_last_change : float;
     mutable reproduction_timer : float;
+    mutable status : creet_status;
   }
 
   let create_node (spec : creet_spec) =
@@ -91,6 +97,14 @@ module%client Creet = struct
     node##.style##.left := Js.string (Printf.sprintf "%gpx" spec.x);
     node##.style##.top := Js.string (Printf.sprintf "%gpx" spec.y);
     node
+
+  let apply_status_style creet =
+    let base_class =
+      match creet.status with
+      | Healthy -> "creet"
+      | Sick -> "creet creet--sick"
+    in
+    creet.node##.className := Js.string base_class
 
   let spawn (config : creet_spec) map_container =
     let node = create_node config in
@@ -107,11 +121,20 @@ module%client Creet = struct
       dir_y;
       time_since_last_change = 0.;
       reproduction_timer = 0.;
+      status = config.status;
     }
+    |> fun creet ->
+    apply_status_style creet;
+    creet
 
   let update_position creet =
     creet.node##.style##.left := Js.string (Printf.sprintf "%gpx" creet.x);
     creet.node##.style##.top := Js.string (Printf.sprintf "%gpx" creet.y)
+
+  let become_sick creet =
+    if creet.status <> Sick then (
+      creet.status <- Sick;
+      apply_status_style creet)
 end
 
 module%client State = struct
@@ -184,39 +207,39 @@ module%client Game_loop = struct
     creet.time_since_last_change <- 0.
 
   let attempt_reproduction (creet : Creet.t) =
-    creet.reproduction_timer <- creet.reproduction_timer +. Config.frame_duration;
-    let rec loop () =
-      if creet.reproduction_timer >= 1. then (
-        creet.reproduction_timer <- creet.reproduction_timer -. 1.;
-        let roll = (Js.math##random) *. 100. in
-        if roll < Config.reproduction_chance then (
-          let dir_x, dir_y = random_direction () in
-          let spec =
-            {
-              id = State.fresh_id ();
-              x = creet.x;
-              y = creet.y;
-              dir_x;
-              dir_y;
-            }
-          in
-          ignore (State.spawn_spec spec));
-        loop ())
-    in
-    loop ()
+    if creet.status = Sick then ()
+    else (
+      creet.reproduction_timer <- creet.reproduction_timer +. Config.frame_duration;
+      let rec loop () =
+        if creet.reproduction_timer >= 1. then (
+          creet.reproduction_timer <- creet.reproduction_timer -. 1.;
+          let roll = (Js.math##random) *. 100. in
+          if roll < Config.reproduction_chance then (
+            let dir_x, dir_y = random_direction () in
+            let spec =
+              {
+                id = State.fresh_id ();
+                x = creet.x;
+                y = creet.y;
+                dir_x;
+                dir_y;
+                status = Healthy;
+              }
+            in
+            ignore (State.spawn_spec spec));
+          loop ())
+      in
+      loop ())
   let handle_bounds (creet : Creet.t) =
-    let hit_x =
-      if creet.x <= min_x && creet.dir_x < 0. then true
-      else if creet.x >= max_x && creet.dir_x > 0. then true
-      else false
-    in
-    let hit_y =
-      if creet.y <= min_y && creet.dir_y < 0. then true
-      else if creet.y >= max_y && creet.dir_y > 0. then true
-      else false
-    in
+    let hit_left = creet.x <= min_x && creet.dir_x < 0. in
+    let hit_right = creet.x >= max_x && creet.dir_x > 0. in
+    let hit_top = creet.y <= min_y && creet.dir_y < 0. in
+    let hit_bottom = creet.y >= max_y && creet.dir_y > 0. in
+    let hit_x = hit_left || hit_right in
+    let hit_y = hit_top || hit_bottom in
     if hit_x || hit_y then (
       reflect creet hit_x hit_y;
+      if hit_top then Creet.become_sick creet;
       creet.x <- clamp creet.x min_x max_x;
       creet.y <- clamp creet.y min_y max_y)
 
