@@ -144,6 +144,11 @@ module%client Creet = struct
       creet.status <- Sick;
       apply_status_style creet)
 
+  let become_healthy creet =
+    if creet.status <> Healthy then (
+      creet.status <- Healthy;
+      apply_status_style creet)
+
   let set_grabbed creet grabbed =
     creet.grabbed <- grabbed;
     apply_status_style creet
@@ -212,11 +217,13 @@ module%client Interaction = struct
     let y = max min_y (min y max_y) in
     (x, y)
 
-  let release_creet () =
+  let release_creet ?(hit_bottom_wall = false) () =
     match !grabbed_creet with
     | None -> ()
     | Some creet ->
         Creet.set_grabbed creet false;
+        if hit_bottom_wall && creet.status = Sick then
+          Creet.become_healthy creet;
         grabbed_creet := None;
         grab_offset := None;
         has_dragged := false;
@@ -274,7 +281,9 @@ module%client Interaction = struct
                 let min_y = 0. in
                 let max_x = Config.map_width -. Config.creet_size in
                 let max_y = Config.map_height -. Config.creet_size in
-                if x <= min_x || x >= max_x || y <= min_y || y >= max_y then
+                if y >= max_y then
+                  release_creet ~hit_bottom_wall:true ()
+                else if x <= min_x || x >= max_x || y <= min_y then
                   release_creet ()))
 
   let setup map =
