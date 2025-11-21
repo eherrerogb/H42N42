@@ -90,6 +90,7 @@ module%client Creet = struct
     mutable time_since_last_change : float;
     mutable reproduction_timer : float;
     mutable status : creet_status;
+    mutable grabbed : bool;
   }
 
   let create_node (spec : creet_spec) =
@@ -105,7 +106,12 @@ module%client Creet = struct
       | Healthy -> "creet"
       | Sick -> "creet creet--sick"
     in
-    creet.node##.className := Js.string base_class
+    let full_class =
+      if creet.grabbed then base_class ^ " creet--grabbed" else base_class
+    in
+    creet.node##.className := Js.string full_class;
+    if creet.grabbed then creet.node##.style##.zIndex := Js.string "1000"
+    else creet.node##.style##.zIndex := Js.string "1"
 
   let spawn (config : creet_spec) map_container =
     let node = create_node config in
@@ -123,6 +129,7 @@ module%client Creet = struct
       time_since_last_change = 0.;
       reproduction_timer = 0.;
       status = config.status;
+      grabbed = false;
     }
     |> fun creet ->
     apply_status_style creet;
@@ -136,6 +143,18 @@ module%client Creet = struct
     if creet.status <> Sick then (
       creet.status <- Sick;
       apply_status_style creet)
+
+  let set_grabbed creet grabbed =
+    creet.grabbed <- grabbed;
+    apply_status_style creet
+
+  let contains_point creet x y =
+    let creet_size = Config.creet_size in
+    x >= creet.x && x <= creet.x +. creet_size
+    && y >= creet.y && y <= creet.y +. creet_size
+
+  let find_at_position x y creets =
+    List.find_opt (fun creet -> contains_point creet x y) creets
 end
 
 module%client State = struct
@@ -163,6 +182,104 @@ module%client State = struct
         let creet = Creet.spawn spec map in
         add_creet creet;
         Some creet
+end
+
+module%client Interaction = struct
+  open Js_of_ocaml
+  open Js_of_ocaml_lwt
+
+  let grabbed_creet : Creet.t option ref = ref None
+  let grab_offset : (float * float) option ref = ref None
+
+  let get_map_position (ev : Dom_html.mouseEvent Js.t) =
+    match !(State.map_container) with
+    | None -> None
+    | Some map ->
+        let rect = map##getBoundingClientRect in
+        let x = float_of_int ev##.clientX -. rect##.left in
+        let y = float_of_int ev##.clientY -. rect##.top in
+        Some (x, y)
+
+  let clamp_to_bounds x y =
+    let min_x = 0. in
+    let min_y = 0. in
+    let max_x = Config.map_width -. Config.creet_size in
+    let max_y = Config.map_height -. Config.creet_size in
+    let x = max min_x (min x max_x) in
+    let y = max min_y (min y max_y) in
+    (x, y)
+
+  let release_creet () =
+    match !grabbed_creet with
+    | None -> ()
+    | Some creet ->
+        Creet.set_grabbed creet false;
+        grabbed_creet := None;
+        grab_offset := None;
+        match !(State.map_container) with
+        | None -> ()
+        | Some map -> map##.classList##remove (Js.string "grabbing")
+
+  let handle_click (ev : Dom_html.mouseEvent Js.t) =
+    match get_map_position ev with
+    | None -> ()
+    | Some (x, y) -> (
+        match !grabbed_creet with
+        | Some _ -> release_creet ()
+        | None -> (
+            let creets = List.rev !(State.active_creets) in
+            match Creet.find_at_position x y creets with
+            | None -> ()
+            | Some creet ->
+                if creet.status = Sick then (
+                  let offset_x = x -. creet.x in
+                  let offset_y = y -. creet.y in
+                  grab_offset := Some (offset_x, offset_y);
+                  Creet.set_grabbed creet true;
+                  grabbed_creet := Some creet;
+                  match !(State.map_container) with
+                  | None -> ()
+                  | Some map -> map##.classList##add (Js.string "grabbing"))))
+
+  let handle_mousemove (ev : Dom_html.mouseEvent Js.t) =
+    match !grabbed_creet with
+    | None -> ()
+    | Some creet -> (
+        match get_map_position ev with
+        | None -> release_creet ()
+        | Some (mouse_x, mouse_y) -> (
+            match !grab_offset with
+            | None -> release_creet ()
+            | Some (offset_x, offset_y) ->
+                let x = mouse_x -. offset_x in
+                let y = mouse_y -. offset_y in
+                let x, y = clamp_to_bounds x y in
+                creet.x <- x;
+                creet.y <- y;
+                Creet.update_position creet;
+                let min_x = 0. in
+                let min_y = 0. in
+                let max_x = Config.map_width -. Config.creet_size in
+                let max_y = Config.map_height -. Config.creet_size in
+                if x <= min_x || x >= max_x || y <= min_y || y >= max_y then
+                  release_creet ()))
+
+  let setup map =
+    let map_element = (map :> Dom_html.element Js.t) in
+    Lwt.async (fun () ->
+        Lwt_js_events.mousedowns map_element (fun ev _ ->
+            handle_click ev;
+            Lwt.return_unit));
+    Lwt.async (fun () ->
+        Lwt_js_events.mousemoves map_element (fun ev _ ->
+            handle_mousemove ev;
+            Lwt.return_unit));
+    Lwt.async (fun () ->
+        Lwt_js_events.mouseups map_element (fun _ev _ ->
+            (match !grabbed_creet with
+            | Some _ -> release_creet ()
+            | None -> ());
+            Lwt.return_unit))
 end
 
 module%client Counters = struct
@@ -281,16 +398,19 @@ module%client Game_loop = struct
       creet.y <- clamp creet.y min_y max_y)
 
   let advance (creet : Creet.t) =
-    creet.time_since_last_change <- creet.time_since_last_change +. Config.frame_duration;
-    if should_turn creet then random_turn creet;
-    attempt_reproduction creet;
-    let step = Config.speed *. (if creet.status = Sick then Config.sick_speed_modifier else 1.) *. Config.frame_duration in
-    creet.x <- creet.x +. (creet.dir_x *. step);
-    creet.y <- creet.y +. (creet.dir_y *. step);
-    creet.x <- clamp creet.x min_x max_x;
-    creet.y <- clamp creet.y min_y max_y;
-    handle_bounds creet;
-    Creet.update_position creet
+    if creet.grabbed then (
+      Creet.update_position creet)
+    else (
+      creet.time_since_last_change <- creet.time_since_last_change +. Config.frame_duration;
+      if should_turn creet then random_turn creet;
+      attempt_reproduction creet;
+      let step = Config.speed *. (if creet.status = Sick then Config.sick_speed_modifier else 1.) *. Config.frame_duration in
+      creet.x <- creet.x +. (creet.dir_x *. step);
+      creet.y <- creet.y +. (creet.dir_y *. step);
+      creet.x <- clamp creet.x min_x max_x;
+      creet.y <- clamp creet.y min_y max_y;
+      handle_bounds creet;
+      Creet.update_position creet)
 
   let rec tick () =
     List.iter advance !(State.active_creets);
@@ -316,6 +436,7 @@ module%client World = struct
         let map = Map_canvas.create_empty () in
         Dom.appendChild root map;
         State.register_map map;
+        Interaction.setup map;
         let shared_creets = ~%initial_creets in
         let next_id =
           List.fold_left (fun acc spec -> max acc spec.id) 0 shared_creets + 1

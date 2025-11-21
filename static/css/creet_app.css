@@ -32,6 +32,10 @@ body {
     box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
 }
 
+#creet-map.grabbing {
+    cursor: grabbing;
+}
+
 .creet {
     width: 24px;
     height: 24px;
@@ -53,6 +57,12 @@ body {
 .creet--sick {
     background: #c0392b;
     border-color: #641e16;
+    cursor: grab;
+}
+
+.creet--grabbed {
+    opacity: 0.5;
+    cursor: grabbing;
 }
 
 .creet:hover {
