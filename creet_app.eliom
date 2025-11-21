@@ -115,27 +115,12 @@ module%client Game_loop = struct
     let mag = sqrt ((dx *. dx) +. (dy *. dy)) in
     if mag = 0. then (1., 0.) else (dx /. mag, dy /. mag)
 
-  let pick_perpendicular x y (dx, dy) =
-    let clockwise = (dy, -.dx) in
-    let counter = (-.dy, dx) in
-    let step = 1. in
-    let inside (cx, cy) =
-      cx >= min_x && cx <= max_x && cy >= min_y && cy <= max_y
-    in
-    let x1 = clamp (x +. fst clockwise *. step) min_x max_x in
-    let y1 = clamp (y +. snd clockwise *. step) min_y max_y in
-    let x2 = clamp (x +. fst counter *. step) min_x max_x in
-    let y2 = clamp (y +. snd counter *. step) min_y max_y in
-    match (inside (x1, y1), inside (x2, y2)) with
-    | true, _ -> clockwise
-    | false, true -> counter
-    | false, false -> clockwise
-
-  let bounce (creet : Creet.t) =
-    let dir = pick_perpendicular creet.x creet.y (creet.dir_x, creet.dir_y) in
-    let dir = normalize (fst dir) (snd dir) in
-    creet.dir_x <- fst dir;
-    creet.dir_y <- snd dir
+  let reflect (creet : Creet.t) hit_x hit_y =
+    if hit_x then creet.dir_x <- -.creet.dir_x;
+    if hit_y then creet.dir_y <- -.creet.dir_y;
+    let dir_x, dir_y = normalize creet.dir_x creet.dir_y in
+    creet.dir_x <- dir_x;
+    creet.dir_y <- dir_y
 
   let handle_bounds (creet : Creet.t) =
     let hit_x =
@@ -149,7 +134,7 @@ module%client Game_loop = struct
       else false
     in
     if hit_x || hit_y then (
-      bounce creet;
+      reflect creet hit_x hit_y;
       creet.x <- clamp creet.x min_x max_x;
       creet.y <- clamp creet.y min_y max_y)
 
