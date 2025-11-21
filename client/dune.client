@@ -1,0 +1,8 @@
+(rule (target Makefile.ml) (deps ../Makefile.eliom)
+  (action
+    (with-stdout-to %{target}
+      (chdir .. (run tools/eliom_ppx_client.exe --as-pp -server-cmo %{cmo:../Makefile} --impl Makefile.eliom)))))
+(rule (target creet_app.ml) (deps ../creet_app.eliom)
+  (action
+    (with-stdout-to %{target}
+      (chdir .. (run tools/eliom_ppx_client.exe --as-pp -server-cmo %{cmo:../creet_app} --impl creet_app.eliom)))))
