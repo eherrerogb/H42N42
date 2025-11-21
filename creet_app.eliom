@@ -4,6 +4,17 @@
 let%server application_name = "creet_app"
 let%client application_name = Eliom_client.get_application_name ()
 
+module%shared Html = Eliom_content.Html.D
+
+type%shared creet_spec = { id : int; x : int; y : int }
+
+let%shared initial_creets =
+  [
+    { id = 1; x = 40; y = 60 };
+    { id = 2; x = 160; y = 140 };
+    { id = 3; x = 280; y = 90 };
+  ]
+
 (* Create a module for the application. See
    https://ocsigen.org/eliom/manual/clientserver-applications for more
    information. *)
@@ -17,6 +28,84 @@ module%shared App = Eliom_registration.App (struct
    blinking when changing page in iOS). *)
 let%client _ = Eliom_client.persist_document_head ()
 
+module%client Game_loop = struct
+  open Js_of_ocaml
+  open Js_of_ocaml_lwt
+  open Lwt.Infix
+
+  let frame_duration = 0.5
+
+  let rec tick count =
+    let message = Printf.sprintf "Creet loop tick: %d" count in
+    Firebug.console##log (Js.string message);
+    Lwt_js.sleep frame_duration >>= fun () -> tick (succ count)
+
+  let start () = Lwt.async (fun () -> tick 0)
+end
+
+module%client Map_canvas = struct
+  open Js_of_ocaml
+
+  let map_id = "creet-map"
+
+  let create_empty () =
+    let container = Dom_html.createDiv Dom_html.document in
+    container##.id := Js.string map_id;
+    container##.className := Js.string "map-area";
+    container
+end
+
+module%client Creet = struct
+  open Js_of_ocaml
+
+  type t = {
+    spec : creet_spec;
+    node : Dom_html.divElement Js.t;
+  }
+
+  let create_node spec =
+    let node = Dom_html.createDiv Dom_html.document in
+    node##.className := Js.string "creet";
+    node##.style##.left := Js.string (Printf.sprintf "%dpx" spec.x);
+    node##.style##.top := Js.string (Printf.sprintf "%dpx" spec.y);
+    node
+
+  let spawn spec map_container =
+    let node = create_node spec in
+    Dom.appendChild map_container node;
+    { spec; node }
+end
+
+module%client World = struct
+  open Js_of_ocaml
+
+  let root_id = "app-root"
+
+  let get_root () =
+    Js.Opt.to_option
+      (Dom_html.document##getElementById (Js.string root_id))
+
+  let mount () =
+    match get_root () with
+    | None -> ()
+    | Some root ->
+        let map = Map_canvas.create_empty () in
+        Dom.appendChild root map;
+        let _active_creets =
+          let shared_creets = ~%initial_creets in
+          List.map (fun spec -> Creet.spawn spec map) shared_creets
+        in
+        Game_loop.start ()
+end
+
+let%client () =
+  let open Js_of_ocaml in
+  let handler _ =
+    World.mount ();
+    Js._false
+  in
+  Dom_html.window##.onload := Dom_html.handler handler
+
 let%server main_service =
   Eliom_service.create ~path:(Eliom_service.Path [])
     ~meth:(Eliom_service.Get Eliom_parameter.unit) ()
@@ -26,14 +115,28 @@ let%client main_service = ~%main_service
 let%shared () =
   App.register ~service:main_service (fun () () ->
     Lwt.return
-      Eliom_content.Html.F.(
+      Html.(
         html
           (head
-             (title (txt "creet_app"))
-             [ css_link
+             (title (txt "Creet MVP"))
+             [
+               css_link
                  ~uri:
                    (make_uri
                       ~service:(Eliom_service.static_dir ())
                       ["css"; "creet_app.css"])
-                 () ])
-          (body [h1 [txt "Welcome from Eliom's distillery!"]])))
+                 ();
+             ])
+          (body
+             [
+               h1 [txt "Creet MVP"];
+               div
+                 ~a:[
+                   a_id "app-root";
+                   a_class ["app-root"];
+                   a_user_data
+                     "creet-count"
+                     (string_of_int (List.length initial_creets));
+                 ]
+                 [];
+             ])))
