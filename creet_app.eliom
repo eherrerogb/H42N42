@@ -34,6 +34,12 @@ module%shared App = Eliom_registration.App (struct
    blinking when changing page in iOS). *)
 let%client _ = Eliom_client.persist_document_head ()
 
+module%client Config = struct
+  let initial_chance = -10.
+  let step = 5.
+  let max_chance = 40.
+end
+
 module%client Map_canvas = struct
   open Js_of_ocaml
 
@@ -60,6 +66,7 @@ module%client Creet = struct
     mutable y : float;
     mutable dir_x : float;
     mutable dir_y : float;
+    mutable time_since_last_change : float;
   }
 
   let create_node (spec : creet_spec) =
@@ -82,6 +89,7 @@ module%client Creet = struct
       y = config.y;
       dir_x;
       dir_y;
+      time_since_last_change = 0.;
     }
 
   let update_position creet =
@@ -94,6 +102,7 @@ module%client State = struct
 end
 
 module%client Game_loop = struct
+  open Js_of_ocaml
   open Js_of_ocaml_lwt
   open Lwt.Infix
 
@@ -120,7 +129,26 @@ module%client Game_loop = struct
     if hit_y then creet.dir_y <- -.creet.dir_y;
     let dir_x, dir_y = normalize creet.dir_x creet.dir_y in
     creet.dir_x <- dir_x;
-    creet.dir_y <- dir_y
+    creet.dir_y <- dir_y;
+    creet.time_since_last_change <- 0.
+
+  let random_direction () =
+    let angle = (Js.math##random) *. 2. *. 3.141592653589793 in
+    normalize (cos angle) (sin angle)
+
+  let should_turn (creet : Creet.t) =
+    let threshold = Config.initial_chance +. (Config.step *. creet.time_since_last_change) in
+    if threshold <= 0. then false
+    else
+      let clamped_threshold = min threshold Config.max_chance in
+      let random_val = (Js.math##random) *. 100. in
+      random_val < clamped_threshold
+
+  let random_turn (creet : Creet.t) =
+    let dir_x, dir_y = random_direction () in
+    creet.dir_x <- dir_x;
+    creet.dir_y <- dir_y;
+    creet.time_since_last_change <- 0.
 
   let handle_bounds (creet : Creet.t) =
     let hit_x =
@@ -139,6 +167,8 @@ module%client Game_loop = struct
       creet.y <- clamp creet.y min_y max_y)
 
   let advance (creet : Creet.t) =
+    creet.time_since_last_change <- creet.time_since_last_change +. frame_duration;
+    if should_turn creet then random_turn creet;
     let step = speed *. frame_duration in
     creet.x <- creet.x +. (creet.dir_x *. step);
     creet.y <- creet.y +. (creet.dir_y *. step);
