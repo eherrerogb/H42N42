@@ -570,9 +570,12 @@ module%client Game_loop = struct
       creet.y <- clamp creet.y min_y max_y)
 
   let creets_collide (creet1 : Creet.t) (creet2 : Creet.t) =
-    let size = Config.creet_size in
-    creet1.x < creet2.x +. size && creet1.x +. size > creet2.x
-    && creet1.y < creet2.y +. size && creet1.y +. size > creet2.y
+    let dx = creet2.x -. creet1.x in
+    let dy = creet2.y -. creet1.y in
+    let distance_squared = (dx *. dx) +. (dy *. dy) in
+    let radius_sum = Config.creet_size in
+    let radius_sum_squared = radius_sum *. radius_sum in
+    distance_squared <= radius_sum_squared
 
   let handle_collisions tree =
     List.iter
