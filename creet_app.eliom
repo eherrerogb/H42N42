@@ -54,6 +54,9 @@ module%client Config = struct
   let sick_speed_modifier = 0.85
   let speed_increment_per_second = 0.01
   
+  (* Infection settings *)
+  let infection_chance = 2.
+  
   (* Map dimensions *)
   let map_width = 420.
   let map_height = 260.
@@ -93,6 +96,9 @@ module%client Creet = struct
     mutable status : creet_status;
     mutable grabbed : bool;
   }
+
+  let add_sick_creet_ref : (t -> unit) ref = ref (fun _ -> ())
+  let remove_sick_creet_ref : (t -> unit) ref = ref (fun _ -> ())
 
   let create_node (spec : creet_spec) =
     let node = Dom_html.createDiv Dom_html.document in
@@ -143,12 +149,14 @@ module%client Creet = struct
   let become_sick creet =
     if creet.status <> Sick then (
       creet.status <- Sick;
-      apply_status_style creet)
+      apply_status_style creet;
+      !add_sick_creet_ref creet)
 
   let become_healthy creet =
     if creet.status <> Healthy then (
       creet.status <- Healthy;
-      apply_status_style creet)
+      apply_status_style creet;
+      !remove_sick_creet_ref creet)
 
   let set_grabbed creet grabbed =
     creet.grabbed <- grabbed;
@@ -163,14 +171,142 @@ module%client Creet = struct
     List.find_opt (fun creet -> contains_point creet x y) creets
 end
 
+module%client Quadtree = struct
+  type bounds = {
+    x : float;
+    y : float;
+    width : float;
+    height : float;
+  }
+
+  type t =
+    | Empty
+    | Leaf of { bounds : bounds; creets : Creet.t list }
+    | Node of {
+        bounds : bounds;
+        nw : t;
+        ne : t;
+        sw : t;
+        se : t;
+      }
+
+  let create_bounds x y width height = { x; y; width; height }
+
+  let intersects bounds1 bounds2 =
+    not
+      (bounds1.x +. bounds1.width <= bounds2.x
+      || bounds2.x +. bounds2.width <= bounds1.x
+      || bounds1.y +. bounds1.height <= bounds2.y
+      || bounds2.y +. bounds2.height <= bounds1.y)
+
+  let get_creet_bounds (creet : Creet.t) : bounds =
+    {
+      x = creet.x;
+      y = creet.y;
+      width = Config.creet_size;
+      height = Config.creet_size;
+    }
+
+  let max_objects = 4
+  let max_depth = 6
+
+  let subdivide bounds =
+    let half_w = bounds.width /. 2. in
+    let half_h = bounds.height /. 2. in
+    let nw = create_bounds bounds.x bounds.y half_w half_h in
+    let ne = create_bounds (bounds.x +. half_w) bounds.y half_w half_h in
+    let sw = create_bounds bounds.x (bounds.y +. half_h) half_w half_h in
+    let se =
+      create_bounds (bounds.x +. half_w) (bounds.y +. half_h) half_w half_h
+    in
+    (nw, ne, sw, se)
+
+  let rec insert (creet : Creet.t) bounds_param depth tree =
+    let creet_bounds = get_creet_bounds creet in
+    if not (intersects bounds_param creet_bounds) then tree
+    else
+      match tree with
+      | Empty ->
+          let creets_list : Creet.t list = [ creet ] in
+          Leaf { bounds = bounds_param; creets = creets_list }
+      | Leaf leaf ->
+          if depth >= max_depth || List.length leaf.creets < max_objects then
+            Leaf { bounds = bounds_param; creets = creet :: leaf.creets }
+          else (
+            let nw, ne, sw, se = subdivide bounds_param in
+            let empty = Empty in
+            let nw_tree = List.fold_left
+                            (fun t c -> insert c nw (depth + 1) t)
+                            empty leaf.creets in
+            let ne_tree = List.fold_left
+                            (fun t c -> insert c ne (depth + 1) t)
+                            empty leaf.creets in
+            let sw_tree = List.fold_left
+                            (fun t c -> insert c sw (depth + 1) t)
+                            empty leaf.creets in
+            let se_tree = List.fold_left
+                            (fun t c -> insert c se (depth + 1) t)
+                            empty leaf.creets in
+            insert creet bounds_param depth
+              (Node {
+                  bounds = bounds_param;
+                  nw = nw_tree;
+                  ne = ne_tree;
+                  sw = sw_tree;
+                  se = se_tree;
+                }))
+      | Node node ->
+          let nw, ne, sw, se = subdivide bounds_param in
+          Node
+            {
+              bounds = bounds_param;
+              nw = insert creet nw (depth + 1) node.nw;
+              ne = insert creet ne (depth + 1) node.ne;
+              sw = insert creet sw (depth + 1) node.sw;
+              se = insert creet se (depth + 1) node.se;
+            }
+
+  let rec query bounds tree acc =
+    match tree with
+    | Empty -> acc
+    | Leaf leaf ->
+        if intersects bounds leaf.bounds then
+          List.fold_left
+            (fun acc creet ->
+              let creet_bounds = get_creet_bounds creet in
+              if intersects bounds creet_bounds then creet :: acc else acc)
+            acc leaf.creets
+        else acc
+    | Node node ->
+        if intersects bounds node.bounds then
+          query bounds node.nw acc
+          |> query bounds node.ne
+          |> query bounds node.sw
+          |> query bounds node.se
+        else acc
+
+  let build creets =
+    let bounds =
+      create_bounds 0. 0. Config.map_width Config.map_height
+    in
+    List.fold_left (fun tree creet -> insert creet bounds 0 tree) Empty creets
+
+  let find_nearby creet tree =
+    let creet_bounds = get_creet_bounds creet in
+    query creet_bounds tree []
+end
+
 module%client State = struct
   open Js_of_ocaml
   let active_creets : Creet.t list ref = ref []
+  let sick_creets : Creet.t list ref = ref []
   let map_container : Dom_html.divElement Js.t option ref = ref None
   let next_id = ref 0
 
   let register_map map = map_container := Some map
-  let set_creets creets = active_creets := creets
+  let set_creets (creets : Creet.t list) =
+    active_creets := creets;
+    sick_creets := List.filter (fun (c : Creet.t) -> c.status = Sick) creets
 
   let set_next_id value = next_id := value
 
@@ -179,7 +315,18 @@ module%client State = struct
     incr next_id;
     id
 
-  let add_creet creet = active_creets := creet :: !active_creets
+  let add_creet creet =
+    active_creets := creet :: !active_creets;
+    if creet.status = Sick then sick_creets := creet :: !sick_creets
+
+  let add_sick_creet creet = sick_creets := creet :: !sick_creets
+
+  let remove_sick_creet creet =
+    sick_creets := List.filter (fun c -> c != creet) !sick_creets
+
+  let () =
+    Creet.add_sick_creet_ref := add_sick_creet;
+    Creet.remove_sick_creet_ref := remove_sick_creet
 
   let spawn_spec spec =
     match !map_container with
@@ -223,8 +370,7 @@ module%client Interaction = struct
     | None -> ()
     | Some creet ->
         Creet.set_grabbed creet false;
-        if hit_bottom_wall && creet.status = Sick then
-          Creet.become_healthy creet;
+        if hit_bottom_wall && creet.status = Sick then Creet.become_healthy creet;
         grabbed_creet := None;
         grab_offset := None;
         has_dragged := false;
@@ -423,6 +569,28 @@ module%client Game_loop = struct
       creet.x <- clamp creet.x min_x max_x;
       creet.y <- clamp creet.y min_y max_y)
 
+  let creets_collide (creet1 : Creet.t) (creet2 : Creet.t) =
+    let size = Config.creet_size in
+    creet1.x < creet2.x +. size && creet1.x +. size > creet2.x
+    && creet1.y < creet2.y +. size && creet1.y +. size > creet2.y
+
+  let handle_collisions tree =
+    List.iter
+      (fun (sick_creet : Creet.t) ->
+        if not sick_creet.grabbed then (
+          let nearby = Quadtree.find_nearby sick_creet tree in
+          List.iter
+            (fun (other_creet : Creet.t) ->
+              if
+                other_creet.status = Healthy
+                && not other_creet.grabbed
+                && creets_collide sick_creet other_creet
+              then (
+                let roll = (Js.math##random) *. 100. in
+                if roll < Config.infection_chance then Creet.become_sick other_creet))
+            nearby))
+      !(State.sick_creets)
+
   let advance (creet : Creet.t) =
     if creet.grabbed then (
       Creet.update_position creet)
@@ -442,6 +610,8 @@ module%client Game_loop = struct
   let rec tick () =
     elapsed_time := !elapsed_time +. Config.frame_duration;
     List.iter advance !(State.active_creets);
+    let tree = Quadtree.build !(State.active_creets) in
+    handle_collisions tree;
     Counters.update ();
     Lwt_js.sleep Config.frame_duration >>= tick
 
