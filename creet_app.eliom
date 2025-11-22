@@ -472,23 +472,27 @@ module%client Interaction = struct
         match get_map_position ev with
         | None -> release_creet ()
         | Some (mouse_x, mouse_y) -> (
-            match !grab_offset with
-            | None -> release_creet ()
-            | Some (offset_x, offset_y) ->
-                let x = mouse_x -. offset_x in
-                let y = mouse_y -. offset_y in
-                let x, y = clamp_to_bounds creet x y in
-                creet.x <- x;
-                creet.y <- y;
-                Creet.update_position creet;
-                let min_x = 0. in
-                let min_y = 0. in
-                let max_x = Config.map_width -. creet.size in
-                let max_y = Config.map_height -. creet.size in
-                if y >= max_y then
-                  release_creet ~hit_bottom_wall:true ()
-                else if x <= min_x || x >= max_x || y <= min_y then
-                  release_creet ()))
+            (* Check if cursor is outside map bounds *)
+            if mouse_x < 0. || mouse_x > Config.map_width || mouse_y < 0. || mouse_y > Config.map_height
+            then release_creet ()
+            else (
+              match !grab_offset with
+              | None -> release_creet ()
+              | Some (offset_x, offset_y) ->
+                  let x = mouse_x -. offset_x in
+                  let y = mouse_y -. offset_y in
+                  let x, y = clamp_to_bounds creet x y in
+                  creet.x <- x;
+                  creet.y <- y;
+                  Creet.update_position creet;
+                  let min_x = 0. in
+                  let min_y = 0. in
+                  let max_x = Config.map_width -. creet.size in
+                  let max_y = Config.map_height -. creet.size in
+                  if y >= max_y then
+                    release_creet ~hit_bottom_wall:true ()
+                  else if x <= min_x || x >= max_x || y <= min_y then
+                    release_creet ())))
 
   let setup map =
     let map_element = (map :> Dom_html.element Js.t) in
@@ -499,7 +503,24 @@ module%client Interaction = struct
     Lwt.async (fun () ->
         Lwt_js_events.mousemoves map_element (fun ev _ ->
             handle_mousemove ev;
-            Lwt.return_unit))
+            Lwt.return_unit));
+    (* Also listen to document-level mousemove to catch fast movements outside map *)
+    Lwt.async (fun () ->
+        Lwt_js_events.mousemoves Dom_html.document##.documentElement (fun ev _ ->
+            match !grabbed_creet with
+            | None -> Lwt.return_unit
+            | Some _ -> (
+                match get_map_position ev with
+                | None -> (
+                    release_creet ();
+                    Lwt.return_unit)
+                | Some (mouse_x, mouse_y) -> (
+                    (* Check if cursor is outside map bounds *)
+                    if mouse_x < 0. || mouse_x > Config.map_width || mouse_y < 0. || mouse_y > Config.map_height
+                    then (
+                      release_creet ();
+                      Lwt.return_unit)
+                    else Lwt.return_unit))))
 end
 
 module%client Counters = struct
