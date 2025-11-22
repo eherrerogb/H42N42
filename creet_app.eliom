@@ -21,8 +21,6 @@ type%shared creet_spec = {
 
 let%shared initial_creets =
   [
-    { id = 1; x = 40.; y = 60.; dir_x = 1.; dir_y = 0.3; status = Healthy };
-    { id = 2; x = 160.; y = 140.; dir_x = -0.6; dir_y = 0.9; status = Healthy };
     { id = 3; x = 280.; y = 90.; dir_x = 0.2; dir_y = -1.; status = Healthy };
   ]
 
@@ -50,9 +48,9 @@ module%client Config = struct
   let frame_duration = 0.02
   
   (* Movement settings *)
-  let speed = 60.
+  let speed = 40.
   let sick_speed_modifier = 0.85
-  let speed_increment_per_second = 0.01
+  let speed_increment_per_second = 0.00
   
   (* Infection settings *)
   let infection_chance = 2.
@@ -102,6 +100,7 @@ module%client Creet = struct
 
   let create_node (spec : creet_spec) =
     let node = Dom_html.createDiv Dom_html.document in
+    node##.id := Js.string (Printf.sprintf "creet-%d" spec.id);
     node##.className := Js.string "creet";
     node##.style##.left := Js.string (Printf.sprintf "%gpx" spec.x);
     node##.style##.top := Js.string (Printf.sprintf "%gpx" spec.y);
@@ -162,13 +161,6 @@ module%client Creet = struct
     creet.grabbed <- grabbed;
     apply_status_style creet
 
-  let contains_point creet x y =
-    let creet_size = Config.creet_size in
-    x >= creet.x && x <= creet.x +. creet_size
-    && y >= creet.y && y <= creet.y +. creet_size
-
-  let find_at_position x y creets =
-    List.find_opt (fun creet -> contains_point creet x y) creets
 end
 
 module%client Quadtree = struct
@@ -294,6 +286,7 @@ module%client Quadtree = struct
   let find_nearby creet tree =
     let creet_bounds = get_creet_bounds creet in
     query creet_bounds tree []
+
 end
 
 module%client State = struct
@@ -340,12 +333,9 @@ end
 module%client Interaction = struct
   open Js_of_ocaml
   open Js_of_ocaml_lwt
-  open Lwt.Infix
 
   let grabbed_creet : Creet.t option ref = ref None
   let grab_offset : (float * float) option ref = ref None
-  let has_dragged : bool ref = ref false
-  let just_released : bool ref = ref false
 
   let get_map_position (ev : Dom_html.mouseEvent Js.t) =
     match !(State.map_container) with
@@ -373,45 +363,85 @@ module%client Interaction = struct
         if hit_bottom_wall && creet.status = Sick then Creet.become_healthy creet;
         grabbed_creet := None;
         grab_offset := None;
-        has_dragged := false;
-        just_released := true;
-        Lwt.async (fun () ->
-            Lwt_js.yield () >|= fun () -> just_released := false);
         match !(State.map_container) with
         | None -> ()
         | Some map -> map##.classList##remove (Js.string "grabbing")
 
   let handle_click (ev : Dom_html.mouseEvent Js.t) =
-    if !just_released then (
-      just_released := false;
-      ())
-    else
-      match get_map_position ev with
-      | None -> ()
-      | Some (x, y) -> (
-          match !grabbed_creet with
-          | Some _ -> release_creet ()
-          | None -> (
-            let creets = List.rev !(State.active_creets) in
-            match Creet.find_at_position x y creets with
-            | None -> ()
-            | Some creet ->
-                if creet.status = Sick then (
-                  let offset_x = x -. creet.x in
-                  let offset_y = y -. creet.y in
-                  grab_offset := Some (offset_x, offset_y);
-                  has_dragged := false;
-                  Creet.set_grabbed creet true;
-                  grabbed_creet := Some creet;
-                  match !(State.map_container) with
+    match get_map_position ev with
+    | None -> ()
+    | Some (x, y) -> (
+        match !grabbed_creet with
+        | Some _ -> release_creet ()
+        | None -> (
+          (* Use event target to find which element was clicked *)
+          let clicked_element = Js.Opt.to_option ev##.target in
+          match clicked_element with
+          | None -> ()
+          | Some element -> (
+              (* Walk up the DOM tree to find an element with a creet ID *)
+              let rec find_creet_id (el : Dom_html.element Js.t) =
+                let id = Js.to_string el##.id in
+                if String.length id > 6 && String.sub id 0 6 = "creet-" then (
+                  try
+                    let creet_id = int_of_string (String.sub id 6 (String.length id - 6)) in
+                    Some creet_id
+                  with _ -> None)
+                else (
+                  match Js.Opt.to_option el##.parentNode with
+                  | None -> None
+                  | Some parent_node -> (
+                      try
+                        let parent_el : Dom_html.element Js.t =
+                          Js.Unsafe.coerce parent_node
+                        in
+                        find_creet_id parent_el
+                      with _ -> None))
+              in
+              match find_creet_id element with
+              | None -> ()
+              | Some creet_id -> (
+                  (* Find the Creet.t object with this ID *)
+                  let creets = !(State.active_creets) in
+                  let found_creet =
+                    List.find_opt
+                      (fun (creet : Creet.t) -> creet.spec.id = creet_id)
+                      creets
+                  in
+                  match found_creet with
                   | None -> ()
-                  | Some map -> map##.classList##add (Js.string "grabbing"))))
+                  | Some creet ->
+                      if creet.status = Sick then (
+                        let offset_x = x -. creet.x in
+                        let offset_y = y -. creet.y in
+                        grab_offset := Some (offset_x, offset_y);
+                        Creet.set_grabbed creet true;
+                        grabbed_creet := Some creet;
+                        let console = Js.Unsafe.global##.console in
+                        ignore
+                          (console##log
+                             (Js.string
+                                ("Grab successful: Click at ("
+                               ^ string_of_float x ^ ", " ^ string_of_float y
+                               ^ "), grabbed creet at (" ^ string_of_float creet.x
+                               ^ ", " ^ string_of_float creet.y ^ ")")));
+                        match !(State.map_container) with
+                        | None -> ()
+                        | Some map -> map##.classList##add (Js.string "grabbing"))
+                      else (
+                        let console = Js.Unsafe.global##.console in
+                        ignore
+                          (console##log
+                             (Js.string
+                                ("Grab failed: Creet at ("
+                               ^ string_of_float creet.x ^ ", "
+                               ^ string_of_float creet.y
+                               ^ ") is not sick"))))))))
 
   let handle_mousemove (ev : Dom_html.mouseEvent Js.t) =
     match !grabbed_creet with
     | None -> ()
     | Some creet -> (
-        has_dragged := true;
         match get_map_position ev with
         | None -> release_creet ()
         | Some (mouse_x, mouse_y) -> (
@@ -442,13 +472,6 @@ module%client Interaction = struct
     Lwt.async (fun () ->
         Lwt_js_events.mousemoves map_element (fun ev _ ->
             handle_mousemove ev;
-            Lwt.return_unit));
-    Lwt.async (fun () ->
-        Lwt_js_events.mouseups map_element (fun _ev _ ->
-            if !has_dragged then (
-              match !grabbed_creet with
-              | Some _ -> release_creet ()
-              | None -> ());
             Lwt.return_unit))
 end
 
