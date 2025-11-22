@@ -9,6 +9,7 @@ module%shared Html = Eliom_content.Html.D
 type%shared creet_status =
   | Healthy
   | Sick
+  | Berserk
 
 type%shared creet_spec = {
   id : int;
@@ -63,6 +64,11 @@ module%client Config = struct
   
   (* Creet size *)
   let creet_size = 24.
+
+  (* Berserk configuration *)
+  let berserk_chance = 10.
+  let berserk_size_increment_per_second = 1.
+  let berserk_extra_size = 96.
 end
 
 module%client Map_canvas = struct
@@ -95,6 +101,7 @@ module%client Creet = struct
     mutable reproduction_timer : float;
     mutable status : creet_status;
     mutable grabbed : bool;
+    mutable size : float;
   }
 
   let add_sick_creet_ref : (t -> unit) ref = ref (fun _ -> ())
@@ -113,6 +120,7 @@ module%client Creet = struct
       match creet.status with
       | Healthy -> "creet"
       | Sick -> "creet creet--sick"
+      | Berserk -> "creet creet--sick creet--berserk"
     in
     let full_class =
       if creet.grabbed then base_class ^ " creet--grabbed" else base_class
@@ -120,6 +128,10 @@ module%client Creet = struct
     creet.node##.className := Js.string full_class;
     if creet.grabbed then creet.node##.style##.zIndex := Js.string "1000"
     else creet.node##.style##.zIndex := Js.string "1"
+
+  let update_size creet =
+    creet.node##.style##.width := Js.string (Printf.sprintf "%gpx" creet.size);
+    creet.node##.style##.height := Js.string (Printf.sprintf "%gpx" creet.size)
 
   let spawn (config : creet_spec) map_container =
     let node = create_node config in
@@ -138,9 +150,11 @@ module%client Creet = struct
       reproduction_timer = 0.;
       status = config.status;
       grabbed = false;
+      size = Config.creet_size;
     }
     |> fun creet ->
     apply_status_style creet;
+    update_size creet;
     creet
 
   let update_position creet =
@@ -148,15 +162,21 @@ module%client Creet = struct
     creet.node##.style##.top := Js.string (Printf.sprintf "%gpx" creet.y)
 
   let become_sick creet =
-    if creet.status <> Sick then (
-      creet.status <- Sick;
+    if creet.status = Healthy then (
+      let roll = (Js.math##random) *. 100. in
+      if roll < Config.berserk_chance then (
+        creet.status <- Berserk)
+      else (
+        creet.status <- Sick);
       apply_status_style creet;
       !add_sick_creet_ref creet)
 
   let become_healthy creet =
     if creet.status <> Healthy then (
       creet.status <- Healthy;
+      creet.size <- Config.creet_size;
       apply_status_style creet;
+      update_size creet;
       !remove_sick_creet_ref creet)
 
   let set_grabbed creet grabbed =
@@ -197,8 +217,8 @@ module%client Quadtree = struct
     {
       x = creet.x;
       y = creet.y;
-      width = Config.creet_size;
-      height = Config.creet_size;
+      width = creet.size;
+      height = creet.size;
     }
 
   let max_objects = 4
@@ -301,7 +321,10 @@ module%client State = struct
   let register_map map = map_container := Some map
   let set_creets (creets : Creet.t list) =
     active_creets := creets;
-    sick_creets := List.filter (fun (c : Creet.t) -> c.status = Sick) creets
+    sick_creets :=
+      List.filter
+        (fun (c : Creet.t) -> c.status = Sick || c.status = Berserk)
+        creets
 
   let set_next_id value = next_id := value
 
@@ -312,7 +335,8 @@ module%client State = struct
 
   let add_creet creet =
     active_creets := creet :: !active_creets;
-    if creet.status = Sick then sick_creets := creet :: !sick_creets
+    if creet.status = Sick || creet.status = Berserk then
+      sick_creets := creet :: !sick_creets
 
   let add_sick_creet creet = sick_creets := creet :: !sick_creets
 
@@ -348,11 +372,11 @@ module%client Interaction = struct
         let y = float_of_int ev##.clientY -. rect##.top in
         Some (x, y)
 
-  let clamp_to_bounds x y =
+  let clamp_to_bounds (creet : Creet.t) x y =
     let min_x = 0. in
     let min_y = 0. in
-    let max_x = Config.map_width -. Config.creet_size in
-    let max_y = Config.map_height -. Config.creet_size in
+    let max_x = Config.map_width -. creet.size in
+    let max_y = Config.map_height -. creet.size in
     let x = max min_x (min x max_x) in
     let y = max min_y (min y max_y) in
     (x, y)
@@ -362,7 +386,8 @@ module%client Interaction = struct
     | None -> ()
     | Some creet ->
         Creet.set_grabbed creet false;
-        if hit_bottom_wall && creet.status = Sick then Creet.become_healthy creet;
+        if hit_bottom_wall && (creet.status = Sick || creet.status = Berserk) then
+          Creet.become_healthy creet;
         grabbed_creet := None;
         grab_offset := None;
         match !(State.map_container) with
@@ -413,7 +438,7 @@ module%client Interaction = struct
                   match found_creet with
                   | None -> ()
                   | Some creet ->
-                      if creet.status = Sick then (
+                      if creet.status <> Healthy then (
                         let offset_x = x -. creet.x in
                         let offset_y = y -. creet.y in
                         grab_offset := Some (offset_x, offset_y);
@@ -452,14 +477,14 @@ module%client Interaction = struct
             | Some (offset_x, offset_y) ->
                 let x = mouse_x -. offset_x in
                 let y = mouse_y -. offset_y in
-                let x, y = clamp_to_bounds x y in
+                let x, y = clamp_to_bounds creet x y in
                 creet.x <- x;
                 creet.y <- y;
                 Creet.update_position creet;
                 let min_x = 0. in
                 let min_y = 0. in
-                let max_x = Config.map_width -. Config.creet_size in
-                let max_y = Config.map_height -. Config.creet_size in
+                let max_x = Config.map_width -. creet.size in
+                let max_y = Config.map_height -. creet.size in
                 if y >= max_y then
                   release_creet ~hit_bottom_wall:true ()
                 else if x <= min_x || x >= max_x || y <= min_y then
@@ -494,7 +519,7 @@ module%client Counters = struct
     let sick_count =
       List.fold_left
         (fun acc (creet : Creet.t) ->
-          if creet.status = Sick then acc + 1 else acc)
+          if creet.status = Sick || creet.status = Berserk then acc + 1 else acc)
         0 creets
     in
     let healthy_elem =
@@ -522,8 +547,6 @@ module%client Game_loop = struct
 
   let min_x = 0.
   let min_y = 0.
-  let max_x = Config.map_width -. Config.creet_size
-  let max_y = Config.map_height -. Config.creet_size
 
   let clamp v low high =
     max low (min v high)
@@ -558,8 +581,7 @@ module%client Game_loop = struct
     creet.time_since_last_change <- 0.
 
   let attempt_reproduction (creet : Creet.t) =
-    if creet.status = Sick then ()
-    else (
+    if creet.status = Healthy then (
       creet.reproduction_timer <- creet.reproduction_timer +. Config.frame_duration;
       let rec loop () =
         if creet.reproduction_timer >= 1. then (
@@ -582,23 +604,27 @@ module%client Game_loop = struct
       in
       loop ())
   let handle_bounds (creet : Creet.t) =
+    let max_x_actual = Config.map_width -. creet.size in
+    let max_y_actual = Config.map_height -. creet.size in
     let hit_left = creet.x <= min_x && creet.dir_x < 0. in
-    let hit_right = creet.x >= max_x && creet.dir_x > 0. in
+    let hit_right = creet.x >= max_x_actual && creet.dir_x > 0. in
     let hit_top = creet.y <= min_y && creet.dir_y < 0. in
-    let hit_bottom = creet.y >= max_y && creet.dir_y > 0. in
+    let hit_bottom = creet.y >= max_y_actual && creet.dir_y > 0. in
     let hit_x = hit_left || hit_right in
     let hit_y = hit_top || hit_bottom in
     if hit_x || hit_y then (
       reflect creet hit_x hit_y;
       if hit_top then Creet.become_sick creet;
-      creet.x <- clamp creet.x min_x max_x;
-      creet.y <- clamp creet.y min_y max_y)
+      creet.x <- clamp creet.x min_x max_x_actual;
+      creet.y <- clamp creet.y min_y max_y_actual)
 
   let creets_collide (creet1 : Creet.t) (creet2 : Creet.t) =
     let dx = creet2.x -. creet1.x in
     let dy = creet2.y -. creet1.y in
     let distance_squared = (dx *. dx) +. (dy *. dy) in
-    let radius_sum = Config.creet_size in
+    let radius1 = creet1.size /. 2. in
+    let radius2 = creet2.size /. 2. in
+    let radius_sum = radius1 +. radius2 in
     let radius_sum_squared = radius_sum *. radius_sum in
     distance_squared <= radius_sum_squared
 
@@ -626,12 +652,27 @@ module%client Game_loop = struct
       creet.time_since_last_change <- creet.time_since_last_change +. Config.frame_duration;
       if should_turn creet then random_turn creet;
       attempt_reproduction creet;
+      (* Grow berserk creets over time *)
+      if creet.status = Berserk then (
+        let max_size = Config.creet_size +. Config.berserk_extra_size in
+        if creet.size < max_size then (
+          creet.size <-
+            min max_size
+              (creet.size +. (Config.berserk_size_increment_per_second *. Config.frame_duration));
+          Creet.update_size creet));
       let current_speed = Config.speed +. (Config.speed_increment_per_second *. !elapsed_time) in
-      let step = current_speed *. (if creet.status = Sick then Config.sick_speed_modifier else 1.) *. Config.frame_duration in
+      let step =
+        current_speed
+        *. (if creet.status = Sick || creet.status = Berserk then Config.sick_speed_modifier
+           else 1.)
+        *. Config.frame_duration
+      in
       creet.x <- creet.x +. (creet.dir_x *. step);
       creet.y <- creet.y +. (creet.dir_y *. step);
-      creet.x <- clamp creet.x min_x max_x;
-      creet.y <- clamp creet.y min_y max_y;
+      let max_x_actual = Config.map_width -. creet.size in
+      let max_y_actual = Config.map_height -. creet.size in
+      creet.x <- clamp creet.x min_x max_x_actual;
+      creet.y <- clamp creet.y min_y max_y_actual;
       handle_bounds creet;
       Creet.update_position creet)
 

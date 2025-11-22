@@ -60,6 +60,12 @@ body {
     cursor: grab;
 }
 
+.creet--berserk {
+    background: #8b1a1a;
+    border-color: #4a0e0e;
+    opacity: 0.75;
+}
+
 .creet--grabbed {
     opacity: 0.5;
     cursor: grabbing;
