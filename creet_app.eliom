@@ -21,6 +21,8 @@ type%shared creet_spec = {
 
 let%shared initial_creets =
   [
+    { id = 1; x = 40.; y = 60.; dir_x = 1.; dir_y = 0.3; status = Healthy };
+    { id = 2; x = 160.; y = 140.; dir_x = -0.6; dir_y = 0.9; status = Healthy };
     { id = 3; x = 280.; y = 90.; dir_x = 0.2; dir_y = -1.; status = Healthy };
   ]
 
@@ -48,9 +50,9 @@ module%client Config = struct
   let frame_duration = 0.02
   
   (* Movement settings *)
-  let speed = 40.
+  let speed = 60.
   let sick_speed_modifier = 0.85
-  let speed_increment_per_second = 0.00
+  let speed_increment_per_second = 0.01
   
   (* Infection settings *)
   let infection_chance = 2.
