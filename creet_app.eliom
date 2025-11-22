@@ -69,6 +69,10 @@ module%client Config = struct
   let berserk_chance = 10.
   let berserk_size_increment_per_second = 1.
   let berserk_extra_size = 96.
+
+  (* Healing configuration *)
+  let healing_distance_threshold = 10. [@@ocaml.warning "-32"]
+
 end
 
 module%client Map_canvas = struct
@@ -381,13 +385,20 @@ module%client Interaction = struct
     let y = max min_y (min y max_y) in
     (x, y)
 
-  let release_creet ?(hit_bottom_wall = false) () =
+  let check_and_heal_if_close_to_bottom (creet : Creet.t) =
+    let bottom_wall_y = Config.map_height in
+    let creet_bottom_y = creet.y +. creet.size in
+    let distance_to_bottom = bottom_wall_y -. creet_bottom_y in
+    if distance_to_bottom <= Config.healing_distance_threshold && distance_to_bottom >= 0. then (
+      if creet.status = Sick || creet.status = Berserk then
+        Creet.become_healthy creet)
+
+  let release_creet () =
     match !grabbed_creet with
     | None -> ()
     | Some creet ->
         Creet.set_grabbed creet false;
-        if hit_bottom_wall && (creet.status = Sick || creet.status = Berserk) then
-          Creet.become_healthy creet;
+        check_and_heal_if_close_to_bottom creet;
         grabbed_creet := None;
         grab_offset := None;
         match !(State.map_container) with
@@ -489,9 +500,7 @@ module%client Interaction = struct
                   let min_y = 0. in
                   let max_x = Config.map_width -. creet.size in
                   let max_y = Config.map_height -. creet.size in
-                  if y >= max_y then
-                    release_creet ~hit_bottom_wall:true ()
-                  else if x <= min_x || x >= max_x || y <= min_y then
+                  if x <= min_x || x >= max_x || y <= min_y || y >= max_y then
                     release_creet ())))
 
   let setup map =
