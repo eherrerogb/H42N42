@@ -110,3 +110,19 @@ body {
     color: #c0392b;
     border-color: #c0392b;
 }
+
+.counter--time {
+    left: 20px;
+    top: 20px;
+    transform: none;
+    color: #f1c40f;
+    border-color: #f1c40f;
+}
+
+.counter--speed {
+    right: 20px;
+    top: 20px;
+    transform: none;
+    color: #9b59b6;
+    border-color: #9b59b6;
+}

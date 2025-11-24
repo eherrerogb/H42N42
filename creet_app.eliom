@@ -585,8 +585,10 @@ module%client Counters = struct
 
   let healthy_counter_id = "healthy-counter"
   let sick_counter_id = "sick-counter"
+  let time_counter_id = "time-counter"
+  let speed_counter_id = "speed-counter"
 
-  let update () =
+  let update ~elapsed_time ~speed_increment =
     let healthy_count = State.healthy_creet_count () in
     let sick_count = State.sick_creet_count () in
     let healthy_elem =
@@ -597,12 +599,33 @@ module%client Counters = struct
       Js.Opt.to_option
         (Dom_html.document##getElementById (Js.string sick_counter_id))
     in
-    match (healthy_elem, sick_elem) with
+    let time_elem =
+      Js.Opt.to_option
+        (Dom_html.document##getElementById (Js.string time_counter_id))
+    in
+    let speed_elem =
+      Js.Opt.to_option
+        (Dom_html.document##getElementById (Js.string speed_counter_id))
+    in
+    (match (healthy_elem, sick_elem) with
     | Some h, Some s ->
         h##.textContent :=
           Js.some (Js.string (string_of_int healthy_count));
         s##.textContent := Js.some (Js.string (string_of_int sick_count))
-    | _ -> ()
+    | _ -> ());
+    (match time_elem with
+    | Some t ->
+        let text = Js.string (Printf.sprintf "%.1fs" elapsed_time) in
+        t##.textContent := Js.some text
+    | None -> ());
+    (match speed_elem with
+    | Some sp ->
+        let text =
+          Js.string
+            (Printf.sprintf "+%.2f" speed_increment)
+        in
+        sp##.textContent := Js.some text
+    | None -> ())
 end
 
 module%client Game_loop = struct
@@ -786,7 +809,10 @@ module%client Game_loop = struct
     let tree = Quadtree.build (State.healthy_creets_list ()) in
     List.iter (fun creet -> advance creet tree) !(State.active_creets);
     handle_collisions tree;
-    Counters.update ();
+    let speed_increment =
+      Config.speed_increment_per_second *. !elapsed_time
+    in
+    Counters.update ~elapsed_time:!elapsed_time ~speed_increment;
     Lwt_js.sleep Config.frame_duration >>= tick
 
   let start () = Lwt.async (fun () -> tick ())
@@ -872,4 +898,16 @@ let%shared () =
                    a_class ["counter"; "counter--sick"];
                  ]
                  [txt "0"];
+              div
+                ~a:[
+                  a_id "time-counter";
+                  a_class ["counter"; "counter--time"];
+                ]
+                [txt "0s"];
+              div
+                ~a:[
+                  a_id "speed-counter";
+                  a_class ["counter"; "counter--speed"];
+                ]
+                [txt "+0"];
              ])))
