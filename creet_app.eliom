@@ -41,6 +41,11 @@ module%shared App = Eliom_registration.App (struct
    blinking when changing page in iOS). *)
 let%client _ = Eliom_client.persist_document_head ()
 
+module%shared Constants = struct
+  let initial_map_width = 420. [@@warning "-32"]
+  let initial_map_height = 260. [@@warning "-32"]
+end
+
 module%client Config = struct
   (* Random direction change settings *)
   let initial_chance = -10.
@@ -58,10 +63,6 @@ module%client Config = struct
   
   (* Infection settings *)
   let infection_chance = 2.
-  
-  (* Map dimensions *)
-  let map_width = 420.
-  let map_height = 260.
   
   (* Creet size *)
   let creet_size = 24.
@@ -81,6 +82,26 @@ module%client Config = struct
 
 end
 
+module%client Settings = struct
+  let default_map_width = Constants.initial_map_width
+  let default_map_height = Constants.initial_map_height
+  let map_width = ref default_map_width
+  let map_height = ref default_map_height
+
+  let get_map_width () = !map_width
+  let get_map_height () = !map_height
+
+  let get_default_map_width () = default_map_width
+  let get_default_map_height () = default_map_height
+
+  let set_map_width v = map_width := v
+  let set_map_height v = map_height := v
+
+  let reset () =
+    map_width := default_map_width;
+    map_height := default_map_height
+end
+
 module%client Map_canvas = struct
   open Js_of_ocaml
 
@@ -90,6 +111,10 @@ module%client Map_canvas = struct
     let container = Dom_html.createDiv Dom_html.document in
     container##.id := Js.string map_id;
     container##.className := Js.string "map-area";
+    container##.style##.width :=
+      Js.string (Printf.sprintf "%gpx" (Settings.get_map_width ()));
+    container##.style##.height :=
+      Js.string (Printf.sprintf "%gpx" (Settings.get_map_height ()));
     container
 end
 
@@ -318,7 +343,7 @@ module%client Quadtree = struct
 
   let build creets =
     let bounds =
-      create_bounds 0. 0. Config.map_width Config.map_height
+      create_bounds 0. 0. (Settings.get_map_width ()) (Settings.get_map_height ())
     in
     List.fold_left (fun tree creet -> insert creet bounds 0 tree) Empty creets
 
@@ -427,14 +452,14 @@ module%client Interaction = struct
   let clamp_to_bounds (creet : Creet.t) x y =
     let min_x = 0. in
     let min_y = 0. in
-    let max_x = Config.map_width -. creet.size in
-    let max_y = Config.map_height -. creet.size in
+    let max_x = Settings.get_map_width () -. creet.size in
+    let max_y = Settings.get_map_height () -. creet.size in
     let x = max min_x (min x max_x) in
     let y = max min_y (min y max_y) in
     (x, y)
 
   let check_and_heal_if_close_to_bottom (creet : Creet.t) =
-    let bottom_wall_y = Config.map_height in
+    let bottom_wall_y = Settings.get_map_height () in
     let creet_bottom_y = creet.y +. creet.size in
     let distance_to_bottom = bottom_wall_y -. creet_bottom_y in
     if distance_to_bottom <= Config.healing_distance_threshold && distance_to_bottom >= 0. then (
@@ -532,7 +557,9 @@ module%client Interaction = struct
         | None -> release_creet ()
         | Some (mouse_x, mouse_y) -> (
             (* Check if cursor is outside map bounds *)
-            if mouse_x < 0. || mouse_x > Config.map_width || mouse_y < 0. || mouse_y > Config.map_height
+            let map_width = Settings.get_map_width () in
+            let map_height = Settings.get_map_height () in
+            if mouse_x < 0. || mouse_x > map_width || mouse_y < 0. || mouse_y > map_height
             then release_creet ()
             else (
               match !grab_offset with
@@ -546,8 +573,8 @@ module%client Interaction = struct
                   Creet.update_position creet;
                   let min_x = 0. in
                   let min_y = 0. in
-                  let max_x = Config.map_width -. creet.size in
-                  let max_y = Config.map_height -. creet.size in
+                  let max_x = Settings.get_map_width () -. creet.size in
+                  let max_y = Settings.get_map_height () -. creet.size in
                   if x <= min_x || x >= max_x || y <= min_y || y >= max_y then
                     release_creet ())))
 
@@ -573,7 +600,9 @@ module%client Interaction = struct
                     Lwt.return_unit)
                 | Some (mouse_x, mouse_y) -> (
                     (* Check if cursor is outside map bounds *)
-                    if mouse_x < 0. || mouse_x > Config.map_width || mouse_y < 0. || mouse_y > Config.map_height
+                    let map_width = Settings.get_map_width () in
+                    let map_height = Settings.get_map_height () in
+                    if mouse_x < 0. || mouse_x > map_width || mouse_y < 0. || mouse_y > map_height
                     then (
                       release_creet ();
                       Lwt.return_unit)
@@ -694,8 +723,8 @@ module%client Game_loop = struct
       in
       loop ())
   let handle_bounds (creet : Creet.t) =
-    let max_x_actual = Config.map_width -. creet.size in
-    let max_y_actual = Config.map_height -. creet.size in
+    let max_x_actual = Settings.get_map_width () -. creet.size in
+    let max_y_actual = Settings.get_map_height () -. creet.size in
     let hit_left = creet.x <= min_x && creet.dir_x < 0. in
     let hit_right = creet.x >= max_x_actual && creet.dir_x > 0. in
     let hit_top = creet.y <= min_y && creet.dir_y < 0. in
@@ -796,8 +825,8 @@ module%client Game_loop = struct
       in
       creet.x <- creet.x +. (creet.dir_x *. step);
       creet.y <- creet.y +. (creet.dir_y *. step);
-      let max_x_actual = Config.map_width -. creet.size in
-      let max_y_actual = Config.map_height -. creet.size in
+      let max_x_actual = Settings.get_map_width () -. creet.size in
+      let max_y_actual = Settings.get_map_height () -. creet.size in
       creet.x <- clamp creet.x min_x max_x_actual;
       creet.y <- clamp creet.y min_y max_y_actual;
       handle_bounds creet;
@@ -822,33 +851,127 @@ module%client World = struct
   open Js_of_ocaml
 
   let root_id = "app-root"
+  let started = ref false
 
   let get_root () =
     Js.Opt.to_option
       (Dom_html.document##getElementById (Js.string root_id))
 
   let mount () =
-    match get_root () with
+    if !started then ()
+    else (
+      started := true;
+      match get_root () with
+      | None -> ()
+      | Some root ->
+          let map = Map_canvas.create_empty () in
+          Dom.appendChild root map;
+          State.register_map map;
+          Interaction.setup map;
+          let shared_creets = ~%initial_creets in
+          let next_id =
+            List.fold_left (fun acc spec -> max acc spec.id) 0 shared_creets + 1
+          in
+          State.set_next_id next_id;
+          let creets =
+            List.map (fun spec -> Creet.spawn spec map) shared_creets
+          in
+          State.set_creets creets;
+          Game_loop.start ();
+    )
+end
+
+module%client Menu = struct
+  open Js_of_ocaml
+
+  let menu_id = "menu-screen"
+  let game_ui_id = "game-ui"
+  let width_input_id = "map-width-input"
+  let height_input_id = "map-height-input"
+  let play_button_id = "play-button"
+  let reset_button_id = "reset-button"
+
+  let get_element id =
+    Js.Opt.to_option
+      (Dom_html.document##getElementById (Js.string id))
+
+  let get_input id =
+    match get_element id with
+    | None -> None
+    | Some el -> Js.Opt.to_option (Dom_html.CoerceTo.input el)
+
+  let add_class el cls = ignore (el##.classList##add (Js.string cls))
+  let remove_class el cls = ignore (el##.classList##remove (Js.string cls))
+
+  let show_game_ui () =
+    match get_element game_ui_id with
+    | Some el -> remove_class el "hidden"
     | None -> ()
-    | Some root ->
-        let map = Map_canvas.create_empty () in
-        Dom.appendChild root map;
-        State.register_map map;
-        Interaction.setup map;
-        let shared_creets = ~%initial_creets in
-        let next_id =
-          List.fold_left (fun acc spec -> max acc spec.id) 0 shared_creets + 1
-        in
-        State.set_next_id next_id;
-        let creets = List.map (fun spec -> Creet.spawn spec map) shared_creets in
-        State.set_creets creets;
-        Game_loop.start ()
+
+  let hide_menu () =
+    match get_element menu_id with
+    | Some el -> add_class el "hidden"
+    | None -> ()
+
+  let string_of_px value =
+    let fractional = abs_float (value -. floor value) in
+    if fractional < 0.001 then Printf.sprintf "%.0f" value
+    else Printf.sprintf "%.2f" value
+
+  let set_input_value id value =
+    match get_input id with
+    | Some input -> input##.value := Js.string (string_of_px value)
+    | None -> ()
+
+  let parse_input_value id default =
+    match get_input id with
+    | None -> default
+    | Some input ->
+        let raw = Js.to_string input##.value in
+        try
+          let v = float_of_string raw in
+          if v < 100. then default else v
+        with _ -> default
+
+  let handle_reset _ =
+    Settings.reset ();
+    set_input_value width_input_id (Settings.get_default_map_width ());
+    set_input_value height_input_id (Settings.get_default_map_height ());
+    Js._false
+
+  let handle_play _ =
+    let width =
+      parse_input_value width_input_id (Settings.get_map_width ())
+    in
+    let height =
+      parse_input_value height_input_id (Settings.get_map_height ())
+    in
+    Settings.set_map_width width;
+    Settings.set_map_height height;
+    hide_menu ();
+    show_game_ui ();
+    World.mount ();
+    Js._false
+
+  let attach_click id handler =
+    match get_element id with
+    | None -> ()
+    | Some el ->
+        ignore
+          (Dom_html.addEventListener el Dom_html.Event.click
+             (Dom_html.handler handler) Js._false)
+
+  let init () =
+    set_input_value width_input_id (Settings.get_map_width ());
+    set_input_value height_input_id (Settings.get_map_height ());
+    attach_click play_button_id handle_play;
+    attach_click reset_button_id handle_reset
 end
 
 let%client () =
   let open Js_of_ocaml in
   let handler _ =
-    World.mount ();
+    Menu.init ();
     Js._false
   in
   Dom_html.window##.onload := Dom_html.handler handler
@@ -878,36 +1001,73 @@ let%shared () =
              [
                h1 [txt "Creet MVP"];
                div
-                 ~a:[
-                   a_id "app-root";
-                   a_class ["app-root"];
-                   a_user_data
-                     "creet-count"
-                     (string_of_int (List.length initial_creets));
-                 ]
-                 [];
+                 ~a:[a_id "menu-screen"; a_class ["menu-screen"]]
+                 [
+                   h2 [txt "Settings"];
+                   div
+                     ~a:[a_class ["menu__group"]]
+                     [
+                       label ~a:[a_label_for "map-width-input"] [txt "Map width (px)"];
+                       input
+                         ~a:[
+                           a_id "map-width-input";
+                           a_input_type `Number;
+                         ]
+                         ();
+                     ];
+                   div
+                     ~a:[a_class ["menu__group"]]
+                     [
+                       label ~a:[a_label_for "map-height-input"] [txt "Map height (px)"];
+                       input
+                         ~a:[
+                           a_id "map-height-input";
+                           a_input_type `Number;
+                         ]
+                         ();
+                     ];
+                   div
+                     ~a:[a_class ["menu__actions"]]
+                     [
+                       button ~a:[a_id "reset-button"; a_class ["menu__button"]] [txt "Reset"];
+                       button ~a:[a_id "play-button"; a_class ["menu__button"; "menu__button--primary"]] [txt "Play"];
+                     ];
+                 ];
                div
-                 ~a:[
-                   a_id "healthy-counter";
-                   a_class ["counter"; "counter--healthy"];
-                 ]
-                 [txt "0"];
-               div
-                 ~a:[
-                   a_id "sick-counter";
-                   a_class ["counter"; "counter--sick"];
-                 ]
-                 [txt "0"];
-              div
-                ~a:[
-                  a_id "time-counter";
-                  a_class ["counter"; "counter--time"];
-                ]
-                [txt "0s"];
-              div
-                ~a:[
-                  a_id "speed-counter";
-                  a_class ["counter"; "counter--speed"];
-                ]
-                [txt "+0"];
+                 ~a:[a_id "game-ui"; a_class ["game-ui"; "hidden"]]
+                 [
+                   div
+                     ~a:[
+                       a_id "app-root";
+                       a_class ["app-root"];
+                       a_user_data
+                         "creet-count"
+                         (string_of_int (List.length initial_creets));
+                     ]
+                     [];
+                   div
+                     ~a:[
+                       a_id "healthy-counter";
+                       a_class ["counter"; "counter--healthy"];
+                     ]
+                     [txt "0"];
+                   div
+                     ~a:[
+                       a_id "sick-counter";
+                       a_class ["counter"; "counter--sick"];
+                     ]
+                     [txt "0"];
+                   div
+                     ~a:[
+                       a_id "time-counter";
+                       a_class ["counter"; "counter--time"];
+                     ]
+                     [txt "0s"];
+                   div
+                     ~a:[
+                       a_id "speed-counter";
+                       a_class ["counter"; "counter--speed"];
+                     ]
+                     [txt "+0"];
+                 ];
              ])))
