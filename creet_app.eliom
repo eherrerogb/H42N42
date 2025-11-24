@@ -44,6 +44,13 @@ let%client _ = Eliom_client.persist_document_head ()
 module%shared Constants = struct
   let initial_map_width = 420. [@@warning "-32"]
   let initial_map_height = 260. [@@warning "-32"]
+  let initial_creet_size = 24.
+  let initial_mean_size = 20.
+  let initial_berserk_extra_size = 72.
+  let creet_size_ratio = initial_creet_size /. initial_map_width [@@warning "-32"]
+  let mean_size_ratio = initial_mean_size /. initial_map_width [@@warning "-32"]
+  let berserk_extra_ratio =
+    initial_berserk_extra_size /. initial_map_width [@@warning "-32"]
 end
 
 module%client Config = struct
@@ -56,29 +63,13 @@ module%client Config = struct
   (* Game loop settings *)
   let frame_duration = 0.02
   
-  (* Movement settings *)
+  (* Movement settings (defaults) *)
   let speed = 60.
   let sick_speed_modifier = 0.85
   let speed_increment_per_second = 0.5
   
   (* Infection settings *)
   let infection_chance = 2.
-  
-  (* Creet size *)
-  let creet_size = 24.
-
-  (* Berserk configuration *)
-  let berserk_chance = 10.
-  let berserk_size_increment_per_second = 1.
-  let berserk_extra_size = 96.
-
-  (* Mean configuration *)
-  let mean_chance = 10.
-  let mean_size = 20.
-  let mean_detection_radius = 150.
-
-  (* Healing configuration *)
-  let healing_distance_threshold = 10. [@@ocaml.warning "-32"]
 
 end
 
@@ -88,37 +79,72 @@ module%client Settings = struct
   let default_speed = Config.speed
   let default_sick_speed_modifier = Config.sick_speed_modifier
   let default_speed_increment = Config.speed_increment_per_second
+  let default_berserk_chance = 10.
+  let default_mean_chance = 10.
+  let default_berserk_size_increment = 1.
 
   let map_width = ref default_map_width
   let map_height = ref default_map_height
   let speed = ref default_speed
   let sick_speed_modifier = ref default_sick_speed_modifier
   let speed_increment = ref default_speed_increment
+  let berserk_chance = ref default_berserk_chance
+  let mean_chance = ref default_mean_chance
+  let berserk_size_increment = ref default_berserk_size_increment
 
   let get_map_width () = !map_width
   let get_map_height () = !map_height
+  let get_creet_size () = get_map_width () *. Constants.creet_size_ratio
+  let get_mean_size () = get_map_width () *. Constants.mean_size_ratio
   let get_speed () = !speed
   let get_sick_speed_modifier () = !sick_speed_modifier
   let get_speed_increment_per_second () = !speed_increment
+  let get_berserk_chance () = !berserk_chance
+  let get_mean_chance () = !mean_chance
+  let get_berserk_extra_size () =
+    get_map_width () *. Constants.berserk_extra_ratio
+  let get_berserk_size_increment () = !berserk_size_increment
+
+  let get_mean_detection_radius () = get_creet_size () *. 6.
+
+  let get_healing_distance_threshold () =
+    let base_creet = get_creet_size () in
+    let mean_sz = get_mean_size () in
+    let berserk_extra = get_berserk_extra_size () in
+    let largest =
+      max
+        (berserk_extra +. base_creet)
+        (berserk_extra +. mean_sz)
+    in
+    largest /. 9.
 
   let get_default_map_width () = default_map_width
   let get_default_map_height () = default_map_height
   let get_default_speed () = default_speed
   let get_default_sick_speed_modifier () = default_sick_speed_modifier
   let get_default_speed_increment () = default_speed_increment
+  let get_default_berserk_chance () = default_berserk_chance
+  let get_default_mean_chance () = default_mean_chance
+  let get_default_berserk_size_increment () = default_berserk_size_increment
 
   let set_map_width v = map_width := v
   let set_map_height v = map_height := v
   let set_speed v = speed := v
   let set_sick_speed_modifier v = sick_speed_modifier := v
   let set_speed_increment_per_second v = speed_increment := v
+  let set_berserk_chance v = berserk_chance := v
+  let set_mean_chance v = mean_chance := v
+  let set_berserk_size_increment v = berserk_size_increment := v
 
   let reset () =
     map_width := default_map_width;
     map_height := default_map_height;
     speed := default_speed;
     sick_speed_modifier := default_sick_speed_modifier;
-    speed_increment := default_speed_increment
+    speed_increment := default_speed_increment;
+    berserk_chance := default_berserk_chance;
+    mean_chance := default_mean_chance;
+    berserk_size_increment := default_berserk_size_increment
 end
 
 module%client Map_canvas = struct
@@ -205,7 +231,7 @@ module%client Creet = struct
       reproduction_timer = 0.;
       status = config.status;
       grabbed = false;
-      size = Config.creet_size;
+      size = Settings.get_creet_size ();
     }
     |> fun creet ->
     apply_status_style creet;
@@ -218,13 +244,15 @@ module%client Creet = struct
 
   let become_sick creet =
     if creet.status = Healthy then (
+      let berserk_chance = Settings.get_berserk_chance () in
+      let mean_chance = Settings.get_mean_chance () in
       !remove_healthy_creet_ref creet;
       let roll = (Js.math##random) *. 100. in
-      if roll < Config.berserk_chance then (
+      if roll < berserk_chance then (
         creet.status <- Berserk)
-      else if roll < Config.berserk_chance +. Config.mean_chance then (
+      else if roll < berserk_chance +. mean_chance then (
         creet.status <- Mean;
-        creet.size <- Config.mean_size)
+        creet.size <- Settings.get_mean_size ())
       else (
         creet.status <- Sick);
       apply_status_style creet;
@@ -234,7 +262,7 @@ module%client Creet = struct
   let become_healthy creet =
     if creet.status <> Healthy then (
       creet.status <- Healthy;
-      creet.size <- Config.creet_size;
+      creet.size <- Settings.get_creet_size ();
       apply_status_style creet;
       update_size creet;
       !add_healthy_creet_ref creet;
@@ -481,7 +509,10 @@ module%client Interaction = struct
     let bottom_wall_y = Settings.get_map_height () in
     let creet_bottom_y = creet.y +. creet.size in
     let distance_to_bottom = bottom_wall_y -. creet_bottom_y in
-    if distance_to_bottom <= Config.healing_distance_threshold && distance_to_bottom >= 0. then (
+    if
+      distance_to_bottom <= Settings.get_healing_distance_threshold ()
+      && distance_to_bottom >= 0.
+    then (
       if creet.status <> Healthy then
         Creet.become_healthy creet)
 
@@ -781,10 +812,11 @@ module%client Game_loop = struct
   let find_closest_healthy_creet (creet : Creet.t) (tree : Quadtree.t) =
     let creet_center_x = creet.x +. (creet.size /. 2.) in
     let creet_center_y = creet.y +. (creet.size /. 2.) in
-    let detection_radius_squared = Config.mean_detection_radius *. Config.mean_detection_radius in
+    let detection_radius = Settings.get_mean_detection_radius () in
+    let detection_radius_squared = detection_radius *. detection_radius in
     (* Use quadtree to find creets within detection radius *)
     let nearby_creets : Creet.t list =
-      Quadtree.query_circle creet_center_x creet_center_y Config.mean_detection_radius tree
+      Quadtree.query_circle creet_center_x creet_center_y detection_radius tree
     in
     (* nearby_creets already contains only healthy creets; find closest *)
     let rec find_closest
@@ -794,8 +826,8 @@ module%client Game_loop = struct
       match remaining with
       | [] -> best_creet
       | (other : Creet.t) :: rest ->
-          let other_center_x = other.x +. (Config.creet_size /. 2.) in
-          let other_center_y = other.y +. (Config.creet_size /. 2.) in
+          let other_center_x = other.x +. (other.size /. 2.) in
+          let other_center_y = other.y +. (other.size /. 2.) in
           let dx = other_center_x -. creet_center_x in
           let dy = other_center_y -. creet_center_y in
           let distance_squared = (dx *. dx) +. (dy *. dy) in
@@ -830,11 +862,14 @@ module%client Game_loop = struct
       attempt_reproduction creet;
       (* Grow berserk creets over time *)
       if creet.status = Berserk then (
-        let max_size = Config.creet_size +. Config.berserk_extra_size in
+        let max_size =
+          Settings.get_creet_size () +. Settings.get_berserk_extra_size ()
+        in
         if creet.size < max_size then (
-          creet.size <-
-            min max_size
-              (creet.size +. (Config.berserk_size_increment_per_second *. Config.frame_duration));
+          let increment =
+            Settings.get_berserk_size_increment () *. Config.frame_duration
+          in
+          creet.size <- min max_size (creet.size +. increment);
           Creet.update_size creet));
       let speed_base = Settings.get_speed () in
       let speed_increment_per_second = Settings.get_speed_increment_per_second () in
@@ -915,6 +950,9 @@ module%client Menu = struct
   let speed_input_id = "speed-input"
   let sick_speed_input_id = "sick-speed-input"
   let speed_increment_input_id = "speed-increment-input"
+  let berserk_chance_input_id = "berserk-chance-input"
+  let mean_chance_input_id = "mean-chance-input"
+  let berserk_increment_input_id = "berserk-size-increment-input"
   let play_button_id = "play-button"
   let reset_button_id = "reset-button"
 
@@ -955,6 +993,23 @@ module%client Menu = struct
     (match get_input speed_increment_input_id with
     | Some input ->
         set_input_attribute input "min" "0";
+        set_input_attribute input "step" "0.1"
+    | None -> ());
+    (match get_input berserk_chance_input_id with
+    | Some input ->
+        set_input_attribute input "min" "0";
+        set_input_attribute input "max" "100";
+        set_input_attribute input "step" "1"
+    | None -> ());
+    (match get_input mean_chance_input_id with
+    | Some input ->
+        set_input_attribute input "min" "0";
+        set_input_attribute input "max" "100";
+        set_input_attribute input "step" "1"
+    | None -> ());
+    (match get_input berserk_increment_input_id with
+    | Some input ->
+        set_input_attribute input "min" "0.01";
         set_input_attribute input "step" "0.1"
     | None -> ())
 
@@ -1003,6 +1058,9 @@ module%client Menu = struct
   let parse_range id default ~min_value ~max_value =
     parse_float_with_limits id ~default ~min_value:(min_value) ~max_value:(Some max_value)
 
+  let parse_percentage id default =
+    parse_float_with_limits id ~default ~min_value:0. ~max_value:(Some 100.)
+
   let handle_reset _ =
     Settings.reset ();
     set_input_value width_input_id (Settings.get_default_map_width ());
@@ -1010,6 +1068,9 @@ module%client Menu = struct
     set_input_value speed_input_id (Settings.get_default_speed ());
     set_input_value sick_speed_input_id (Settings.get_default_sick_speed_modifier ());
     set_input_value speed_increment_input_id (Settings.get_default_speed_increment ());
+    set_input_value berserk_chance_input_id (Settings.get_default_berserk_chance ());
+    set_input_value mean_chance_input_id (Settings.get_default_mean_chance ());
+    set_input_value berserk_increment_input_id (Settings.get_default_berserk_size_increment ());
     Js._false
 
   let handle_play _ =
@@ -1030,11 +1091,25 @@ module%client Menu = struct
         ~default:(Settings.get_speed_increment_per_second ()) ~min_value:0.
         ~max_value:None
     in
+    let berserk_chance =
+      parse_percentage berserk_chance_input_id (Settings.get_berserk_chance ())
+    in
+    let mean_chance =
+      parse_percentage mean_chance_input_id (Settings.get_mean_chance ())
+    in
+    let berserk_increment =
+      parse_float_with_limits berserk_increment_input_id
+        ~default:(Settings.get_berserk_size_increment ()) ~min_value:0.01
+        ~max_value:None
+    in
     Settings.set_map_width width;
     Settings.set_map_height height;
     Settings.set_speed speed;
     Settings.set_sick_speed_modifier sick_modifier;
     Settings.set_speed_increment_per_second speed_increment;
+    Settings.set_berserk_chance berserk_chance;
+    Settings.set_mean_chance mean_chance;
+    Settings.set_berserk_size_increment berserk_increment;
     hide_menu ();
     show_game_ui ();
     World.mount ();
@@ -1056,6 +1131,9 @@ module%client Menu = struct
     set_input_value sick_speed_input_id (Settings.get_sick_speed_modifier ());
     set_input_value speed_increment_input_id
       (Settings.get_speed_increment_per_second ());
+    set_input_value berserk_chance_input_id (Settings.get_berserk_chance ());
+    set_input_value mean_chance_input_id (Settings.get_mean_chance ());
+    set_input_value berserk_increment_input_id (Settings.get_berserk_size_increment ());
     attach_click play_button_id handle_play;
     attach_click reset_button_id handle_reset
 end
@@ -1146,6 +1224,39 @@ let%shared () =
                             ~a:[
                               a_id "sick-speed-input";
                               a_input_type `Range;
+                            ]
+                            ();
+                        ];
+                      div
+                        ~a:[a_class ["menu__group"]]
+                        [
+                          label ~a:[a_label_for "berserk-chance-input"] [txt "Berserk chance (%)"];
+                          input
+                            ~a:[
+                              a_id "berserk-chance-input";
+                              a_input_type `Range;
+                            ]
+                            ();
+                        ];
+                      div
+                        ~a:[a_class ["menu__group"]]
+                        [
+                          label ~a:[a_label_for "mean-chance-input"] [txt "Mean chance (%)"];
+                          input
+                            ~a:[
+                              a_id "mean-chance-input";
+                              a_input_type `Range;
+                            ]
+                            ();
+                        ];
+                      div
+                        ~a:[a_class ["menu__group"]]
+                        [
+                          label ~a:[a_label_for "berserk-size-increment-input"] [txt "Berserk size increment / s"];
+                          input
+                            ~a:[
+                              a_id "berserk-size-increment-input";
+                              a_input_type `Number;
                             ]
                             ();
                         ];
