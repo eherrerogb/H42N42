@@ -116,6 +116,8 @@ module%client Creet = struct
 
   let add_sick_creet_ref : (t -> unit) ref = ref (fun _ -> ())
   let remove_sick_creet_ref : (t -> unit) ref = ref (fun _ -> ())
+  let add_healthy_creet_ref : (t -> unit) ref = ref (fun _ -> ())
+  let remove_healthy_creet_ref : (t -> unit) ref = ref (fun _ -> ())
 
   let create_node (spec : creet_spec) =
     let node = Dom_html.createDiv Dom_html.document in
@@ -174,6 +176,7 @@ module%client Creet = struct
 
   let become_sick creet =
     if creet.status = Healthy then (
+      !remove_healthy_creet_ref creet;
       let roll = (Js.math##random) *. 100. in
       if roll < Config.berserk_chance then (
         creet.status <- Berserk)
@@ -192,6 +195,7 @@ module%client Creet = struct
       creet.size <- Config.creet_size;
       apply_status_style creet;
       update_size creet;
+      !add_healthy_creet_ref creet;
       !remove_sick_creet_ref creet)
 
   let set_grabbed creet grabbed =
@@ -339,17 +343,28 @@ end
 module%client State = struct
   open Js_of_ocaml
   let active_creets : Creet.t list ref = ref []
-  let sick_creets : Creet.t list ref = ref []
+  let healthy_creets_table : (int, Creet.t) Hashtbl.t = Hashtbl.create 64
+  let sick_creets_table : (int, Creet.t) Hashtbl.t = Hashtbl.create 64
   let map_container : Dom_html.divElement Js.t option ref = ref None
   let next_id = ref 0
 
   let register_map map = map_container := Some map
+
+  let add_to_table table (creet : Creet.t) =
+    Hashtbl.replace table creet.spec.id creet
+
+  let remove_from_table table (creet : Creet.t) =
+    Hashtbl.remove table creet.spec.id
+
   let set_creets (creets : Creet.t list) =
     active_creets := creets;
-    sick_creets :=
-      List.filter
-        (fun (c : Creet.t) -> c.status <> Healthy)
-        creets
+    Hashtbl.reset healthy_creets_table;
+    Hashtbl.reset sick_creets_table;
+    List.iter
+      (fun (c : Creet.t) ->
+        if c.status = Healthy then add_to_table healthy_creets_table c
+        else add_to_table sick_creets_table c)
+      creets
 
   let set_next_id value = next_id := value
 
@@ -360,17 +375,31 @@ module%client State = struct
 
   let add_creet creet =
     active_creets := creet :: !active_creets;
-    if creet.status <> Healthy then
-      sick_creets := creet :: !sick_creets
+    if creet.status = Healthy then add_to_table healthy_creets_table creet
+    else add_to_table sick_creets_table creet
 
-  let add_sick_creet creet = sick_creets := creet :: !sick_creets
+  let add_sick_creet creet = add_to_table sick_creets_table creet
 
-  let remove_sick_creet creet =
-    sick_creets := List.filter (fun c -> c != creet) !sick_creets
+  let remove_sick_creet creet = remove_from_table sick_creets_table creet
+
+  let add_healthy_creet creet = add_to_table healthy_creets_table creet
+
+  let remove_healthy_creet creet = remove_from_table healthy_creets_table creet
+
+  let healthy_creets_list () =
+    Hashtbl.fold (fun _ (c : Creet.t) acc -> c :: acc) healthy_creets_table []
+
+  let healthy_creet_count () = Hashtbl.length healthy_creets_table
+
+  let sick_creet_count () = Hashtbl.length sick_creets_table
+
+  let iter_sick_creets f = Hashtbl.iter (fun _ creet -> f creet) sick_creets_table
 
   let () =
     Creet.add_sick_creet_ref := add_sick_creet;
-    Creet.remove_sick_creet_ref := remove_sick_creet
+    Creet.remove_sick_creet_ref := remove_sick_creet;
+    Creet.add_healthy_creet_ref := add_healthy_creet;
+    Creet.remove_healthy_creet_ref := remove_healthy_creet
 
   let spawn_spec spec =
     match !map_container with
@@ -560,19 +589,8 @@ module%client Counters = struct
   let sick_counter_id = "sick-counter"
 
   let update () =
-    let creets : Creet.t list = !(State.active_creets) in
-    let healthy_count =
-      List.fold_left
-        (fun acc (creet : Creet.t) ->
-          if creet.status = Healthy then acc + 1 else acc)
-        0 creets
-    in
-    let sick_count =
-      List.fold_left
-        (fun acc (creet : Creet.t) ->
-          if creet.status <> Healthy then acc + 1 else acc)
-        0 creets
-    in
+    let healthy_count = State.healthy_creet_count () in
+    let sick_count = State.sick_creet_count () in
     let healthy_elem =
       Js.Opt.to_option
         (Dom_html.document##getElementById (Js.string healthy_counter_id))
@@ -680,21 +698,16 @@ module%client Game_loop = struct
     distance_squared <= radius_sum_squared
 
   let handle_collisions tree =
-    List.iter
+    State.iter_sick_creets
       (fun (sick_creet : Creet.t) ->
         if not sick_creet.grabbed then (
           let nearby = Quadtree.find_nearby sick_creet tree in
           List.iter
             (fun (other_creet : Creet.t) ->
-              if
-                other_creet.status = Healthy
-                && not other_creet.grabbed
-                && creets_collide sick_creet other_creet
-              then (
+              if creets_collide sick_creet other_creet then (
                 let roll = (Js.math##random) *. 100. in
                 if roll < Config.infection_chance then Creet.become_sick other_creet))
             nearby))
-      !(State.sick_creets)
 
   let find_closest_healthy_creet (creet : Creet.t) (tree : Quadtree.t) =
     let creet_center_x = creet.x +. (creet.size /. 2.) in
@@ -772,10 +785,7 @@ module%client Game_loop = struct
   let rec tick () =
     elapsed_time := !elapsed_time +. Config.frame_duration;
     (* Build quadtree with only healthy creets for targeting/infection *)
-    let healthy_creets =
-      List.filter (fun (c : Creet.t) -> c.status = Healthy) !(State.active_creets)
-    in
-    let tree = Quadtree.build healthy_creets in
+    let tree = Quadtree.build (State.healthy_creets_list ()) in
     List.iter (fun creet -> advance creet tree) !(State.active_creets);
     handle_collisions tree;
     Counters.update ();
