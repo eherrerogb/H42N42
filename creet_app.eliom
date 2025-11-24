@@ -72,7 +72,7 @@ module%client Config = struct
   let berserk_extra_size = 96.
 
   (* Mean configuration *)
-  let mean_chance = 100.
+  let mean_chance = 10.
   let mean_size = 20.
   let mean_detection_radius = 150.
 
