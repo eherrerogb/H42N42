@@ -90,6 +90,7 @@ module%client Settings = struct
   let default_berserk_chance = 10.
   let default_mean_chance = 10.
   let default_berserk_size_increment = 1.
+  let default_initial_creet_count = 3
 
   let map_width = ref default_map_width
   let map_height = ref default_map_height
@@ -99,6 +100,7 @@ module%client Settings = struct
   let berserk_chance = ref default_berserk_chance
   let mean_chance = ref default_mean_chance
   let berserk_size_increment = ref default_berserk_size_increment
+  let initial_creet_count = ref default_initial_creet_count
 
   let get_map_width () = !map_width
   let get_map_height () = !map_height
@@ -117,6 +119,7 @@ module%client Settings = struct
   let get_berserk_extra_size () =
     sized_with_min Constants.berserk_extra_ratio Constants.initial_berserk_extra_size
   let get_berserk_size_increment () = !berserk_size_increment
+  let get_initial_creet_count () = !initial_creet_count
 
   let get_mean_detection_radius () = get_creet_size () *. 6.
 
@@ -139,6 +142,7 @@ module%client Settings = struct
   let get_default_berserk_chance () = default_berserk_chance
   let get_default_mean_chance () = default_mean_chance
   let get_default_berserk_size_increment () = default_berserk_size_increment
+  let get_default_initial_creet_count () = default_initial_creet_count
 
   let set_map_width v = map_width := v
   let set_map_height v = map_height := v
@@ -148,6 +152,7 @@ module%client Settings = struct
   let set_berserk_chance v = berserk_chance := v
   let set_mean_chance v = mean_chance := v
   let set_berserk_size_increment v = berserk_size_increment := v
+  let set_initial_creet_count v = initial_creet_count := v
 
   let reset () =
     map_width := default_map_width;
@@ -157,7 +162,8 @@ module%client Settings = struct
     speed_increment := default_speed_increment;
     berserk_chance := default_berserk_chance;
     mean_chance := default_mean_chance;
-    berserk_size_increment := default_berserk_size_increment
+    berserk_size_increment := default_berserk_size_increment;
+    initial_creet_count := default_initial_creet_count
 end
 
 module%client Map_canvas = struct
@@ -996,17 +1002,33 @@ module%client World = struct
 
   let root_id = "app-root"
   let started = ref false
-  let shared_initial_creets : creet_spec list = ~%initial_creets
-
-  let compute_next_id specs =
-    List.fold_left (fun acc spec -> max acc spec.id) 0 specs + 1
 
   let spawn_initial_creets map =
-    let creets =
-      List.map (fun spec -> Creet.spawn spec map) shared_initial_creets
+    let count = Settings.get_initial_creet_count () in
+    let map_width = Settings.get_map_width () in
+    let map_height = Settings.get_map_height () in
+    let creet_size = Settings.get_creet_size () in
+    let max_x = map_width -. creet_size in
+    let max_y = map_height -. creet_size in
+    let next_id = ref 1 in
+    let generate_random_creet () =
+      let x = (Js.math##random) *. max_x in
+      let y = (Js.math##random) *. max_y in
+      let angle = (Js.math##random) *. 2. *. 3.141592653589793 in
+      let dir_x = cos angle in
+      let dir_y = sin angle in
+      let id = !next_id in
+      incr next_id;
+      { id; x; y; dir_x; dir_y; status = Healthy }
     in
+    let rec generate_creets n acc =
+      if n <= 0 then acc
+      else generate_creets (n - 1) (generate_random_creet () :: acc)
+    in
+    let creet_specs = generate_creets count [] in
+    let creets = List.map (fun spec -> Creet.spawn spec map) creet_specs in
     State.set_creets creets;
-    State.set_next_id (compute_next_id shared_initial_creets)
+    State.set_next_id (List.fold_left (fun acc spec -> max acc spec.id) 0 creet_specs + 1)
 
   let get_root () =
     Js.Opt.to_option
@@ -1052,6 +1074,7 @@ module%client Menu = struct
   let berserk_chance_input_id = "berserk-chance-input"
   let mean_chance_input_id = "mean-chance-input"
   let berserk_increment_input_id = "berserk-size-increment-input"
+  let initial_creet_count_input_id = "initial-creet-count-input"
   let play_button_id = "play-button"
   let reset_button_id = "reset-button"
   let go_to_menu_button_id = "go-to-menu-button"
@@ -1111,6 +1134,11 @@ module%client Menu = struct
     | Some input ->
         set_input_attribute input "min" "0.01";
         set_input_attribute input "step" "0.1"
+    | None -> ());
+    (match get_input initial_creet_count_input_id with
+    | Some input ->
+        set_input_attribute input "min" "1";
+        set_input_attribute input "step" "1"
     | None -> ())
 
   let set_hidden id hidden =
@@ -1151,6 +1179,11 @@ module%client Menu = struct
     | Some input -> input##.value := Js.string (format_float value)
     | None -> ()
 
+  let set_int_input_value id value =
+    match get_input id with
+    | Some input -> input##.value := Js.string (string_of_int value)
+    | None -> ()
+
   let clamp value min_value max_value =
     let v = if value < min_value then min_value else value in
     match max_value with
@@ -1176,6 +1209,17 @@ module%client Menu = struct
   let parse_percentage id default =
     parse_float_with_limits id ~default ~min_value:0. ~max_value:(Some 100.)
 
+  let parse_int_with_limits id ~default ~min_value ~max_value =
+    match get_input id with
+    | None -> default
+    | Some input ->
+        let raw = Js.to_string input##.value in
+        try
+          let v = int_of_string raw in
+          let clamped = max min_value (match max_value with None -> v | Some max_v -> min v max_v) in
+          clamped
+        with _ -> default
+
   let handle_reset _ =
     Settings.reset ();
     set_input_value width_input_id (Settings.get_default_map_width ());
@@ -1186,6 +1230,7 @@ module%client Menu = struct
     set_input_value berserk_chance_input_id (Settings.get_default_berserk_chance ());
     set_input_value mean_chance_input_id (Settings.get_default_mean_chance ());
     set_input_value berserk_increment_input_id (Settings.get_default_berserk_size_increment ());
+    set_int_input_value initial_creet_count_input_id (Settings.get_default_initial_creet_count ());
     Js._false
 
   let handle_go_to_menu _ =
@@ -1225,6 +1270,10 @@ module%client Menu = struct
         ~default:(Settings.get_berserk_size_increment ()) ~min_value:0.01
         ~max_value:None
     in
+    let initial_creet_count =
+      parse_int_with_limits initial_creet_count_input_id
+        ~default:(Settings.get_initial_creet_count ()) ~min_value:1 ~max_value:None
+    in
     Settings.set_map_width width;
     Settings.set_map_height height;
     Settings.set_speed speed;
@@ -1233,6 +1282,7 @@ module%client Menu = struct
     Settings.set_berserk_chance berserk_chance;
     Settings.set_mean_chance mean_chance;
     Settings.set_berserk_size_increment berserk_increment;
+    Settings.set_initial_creet_count initial_creet_count;
     hide_game_over ();
     World.mount ();
     World.reset_creets ();
@@ -1261,6 +1311,7 @@ module%client Menu = struct
     set_input_value berserk_chance_input_id (Settings.get_berserk_chance ());
     set_input_value mean_chance_input_id (Settings.get_mean_chance ());
     set_input_value berserk_increment_input_id (Settings.get_berserk_size_increment ());
+    set_int_input_value initial_creet_count_input_id (Settings.get_initial_creet_count ());
     attach_click play_button_id handle_play;
     attach_click reset_button_id handle_reset;
     attach_click go_to_menu_button_id handle_go_to_menu
@@ -1403,6 +1454,17 @@ let%shared () =
                           input
                             ~a:[
                               a_id "speed-increment-input";
+                              a_input_type `Number;
+                            ]
+                            ();
+                        ];
+                      div
+                        ~a:[a_class ["menu__group"]]
+                        [
+                          label ~a:[a_label_for "initial-creet-count-input"] [txt "Initial creet count"];
+                          input
+                            ~a:[
+                              a_id "initial-creet-count-input";
                               a_input_type `Number;
                             ]
                             ();
