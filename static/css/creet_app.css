@@ -66,6 +66,11 @@ body {
     opacity: 0.75;
 }
 
+.creet--mean {
+    background: #4a0a0a;
+    border-color: #2a0505;
+}
+
 .creet--grabbed {
     opacity: 0.5;
     cursor: grabbing;

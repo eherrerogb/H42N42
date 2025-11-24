@@ -10,6 +10,7 @@ type%shared creet_status =
   | Healthy
   | Sick
   | Berserk
+  | Mean
 
 type%shared creet_spec = {
   id : int;
@@ -70,6 +71,11 @@ module%client Config = struct
   let berserk_size_increment_per_second = 1.
   let berserk_extra_size = 96.
 
+  (* Mean configuration *)
+  let mean_chance = 100.
+  let mean_size = 20.
+  let mean_detection_radius = 150.
+
   (* Healing configuration *)
   let healing_distance_threshold = 10. [@@ocaml.warning "-32"]
 
@@ -125,6 +131,7 @@ module%client Creet = struct
       | Healthy -> "creet"
       | Sick -> "creet creet--sick"
       | Berserk -> "creet creet--sick creet--berserk"
+      | Mean -> "creet creet--sick creet--mean"
     in
     let full_class =
       if creet.grabbed then base_class ^ " creet--grabbed" else base_class
@@ -170,9 +177,13 @@ module%client Creet = struct
       let roll = (Js.math##random) *. 100. in
       if roll < Config.berserk_chance then (
         creet.status <- Berserk)
+      else if roll < Config.berserk_chance +. Config.mean_chance then (
+        creet.status <- Mean;
+        creet.size <- Config.mean_size)
       else (
         creet.status <- Sick);
       apply_status_style creet;
+      update_size creet;
       !add_sick_creet_ref creet)
 
   let become_healthy creet =
@@ -313,6 +324,16 @@ module%client Quadtree = struct
     let creet_bounds = get_creet_bounds creet in
     query creet_bounds tree []
 
+  let query_circle center_x center_y radius tree =
+    let bounds =
+      create_bounds
+        (center_x -. radius)
+        (center_y -. radius)
+        (radius *. 2.)
+        (radius *. 2.)
+    in
+    query bounds tree []
+
 end
 
 module%client State = struct
@@ -327,7 +348,7 @@ module%client State = struct
     active_creets := creets;
     sick_creets :=
       List.filter
-        (fun (c : Creet.t) -> c.status = Sick || c.status = Berserk)
+        (fun (c : Creet.t) -> c.status <> Healthy)
         creets
 
   let set_next_id value = next_id := value
@@ -339,7 +360,7 @@ module%client State = struct
 
   let add_creet creet =
     active_creets := creet :: !active_creets;
-    if creet.status = Sick || creet.status = Berserk then
+    if creet.status <> Healthy then
       sick_creets := creet :: !sick_creets
 
   let add_sick_creet creet = sick_creets := creet :: !sick_creets
@@ -390,7 +411,7 @@ module%client Interaction = struct
     let creet_bottom_y = creet.y +. creet.size in
     let distance_to_bottom = bottom_wall_y -. creet_bottom_y in
     if distance_to_bottom <= Config.healing_distance_threshold && distance_to_bottom >= 0. then (
-      if creet.status = Sick || creet.status = Berserk then
+      if creet.status <> Healthy then
         Creet.become_healthy creet)
 
   let release_creet () =
@@ -549,7 +570,7 @@ module%client Counters = struct
     let sick_count =
       List.fold_left
         (fun acc (creet : Creet.t) ->
-          if creet.status = Sick || creet.status = Berserk then acc + 1 else acc)
+          if creet.status <> Healthy then acc + 1 else acc)
         0 creets
     in
     let healthy_elem =
@@ -675,12 +696,55 @@ module%client Game_loop = struct
             nearby))
       !(State.sick_creets)
 
-  let advance (creet : Creet.t) =
+  let find_closest_healthy_creet (creet : Creet.t) (tree : Quadtree.t) =
+    let creet_center_x = creet.x +. (creet.size /. 2.) in
+    let creet_center_y = creet.y +. (creet.size /. 2.) in
+    let detection_radius_squared = Config.mean_detection_radius *. Config.mean_detection_radius in
+    (* Use quadtree to find creets within detection radius *)
+    let nearby_creets : Creet.t list =
+      Quadtree.query_circle creet_center_x creet_center_y Config.mean_detection_radius tree
+    in
+    (* nearby_creets already contains only healthy creets; find closest *)
+    let rec find_closest
+        (best_creet : Creet.t option)
+        (best_distance_squared : float)
+        (remaining : Creet.t list) =
+      match remaining with
+      | [] -> best_creet
+      | (other : Creet.t) :: rest ->
+          let other_center_x = other.x +. (Config.creet_size /. 2.) in
+          let other_center_y = other.y +. (Config.creet_size /. 2.) in
+          let dx = other_center_x -. creet_center_x in
+          let dy = other_center_y -. creet_center_y in
+          let distance_squared = (dx *. dx) +. (dy *. dy) in
+          if distance_squared <= detection_radius_squared
+             && (best_creet = None || distance_squared < best_distance_squared)
+          then find_closest (Some other) distance_squared rest
+          else find_closest best_creet best_distance_squared rest
+    in
+    find_closest None 1e10 nearby_creets
+
+  let advance (creet : Creet.t) (tree : Quadtree.t) =
     if creet.grabbed then (
       Creet.update_position creet)
     else (
       creet.time_since_last_change <- creet.time_since_last_change +. Config.frame_duration;
-      if should_turn creet then random_turn creet;
+      (* Mean creets target closest healthy creet *)
+      if creet.status = Mean then (
+        match find_closest_healthy_creet creet tree with
+        | None -> if should_turn creet then random_turn creet
+        | Some target ->
+            let creet_center_x = creet.x +. (creet.size /. 2.) in
+            let creet_center_y = creet.y +. (creet.size /. 2.) in
+            let target_center_x = target.x +. (target.size /. 2.) in
+            let target_center_y = target.y +. (target.size /. 2.) in
+            let dx = target_center_x -. creet_center_x in
+            let dy = target_center_y -. creet_center_y in
+            let dir_x, dir_y = normalize dx dy in
+            creet.dir_x <- dir_x;
+            creet.dir_y <- dir_y;
+            creet.time_since_last_change <- 0.)
+      else if should_turn creet then random_turn creet;
       attempt_reproduction creet;
       (* Grow berserk creets over time *)
       if creet.status = Berserk then (
@@ -693,8 +757,7 @@ module%client Game_loop = struct
       let current_speed = Config.speed +. (Config.speed_increment_per_second *. !elapsed_time) in
       let step =
         current_speed
-        *. (if creet.status = Sick || creet.status = Berserk then Config.sick_speed_modifier
-           else 1.)
+        *. (if creet.status <> Healthy then Config.sick_speed_modifier else 1.)
         *. Config.frame_duration
       in
       creet.x <- creet.x +. (creet.dir_x *. step);
@@ -708,8 +771,12 @@ module%client Game_loop = struct
 
   let rec tick () =
     elapsed_time := !elapsed_time +. Config.frame_duration;
-    List.iter advance !(State.active_creets);
-    let tree = Quadtree.build !(State.active_creets) in
+    (* Build quadtree with only healthy creets for targeting/infection *)
+    let healthy_creets =
+      List.filter (fun (c : Creet.t) -> c.status = Healthy) !(State.active_creets)
+    in
+    let tree = Quadtree.build healthy_creets in
+    List.iter (fun creet -> advance creet tree) !(State.active_creets);
     handle_collisions tree;
     Counters.update ();
     Lwt_js.sleep Config.frame_duration >>= tick
