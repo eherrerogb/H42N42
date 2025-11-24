@@ -73,6 +73,14 @@ module%client Config = struct
 
 end
 
+module%client Game_time = struct
+  let elapsed_time = ref 0.
+
+  let reset () = elapsed_time := 0.
+  let add dt = elapsed_time := !elapsed_time +. dt
+  let get () = !elapsed_time
+end
+
 module%client Settings = struct
   let default_map_width = Constants.initial_map_width
   let default_map_height = Constants.initial_map_height
@@ -190,6 +198,8 @@ module%client Creet = struct
     mutable status : creet_status;
     mutable grabbed : bool;
     mutable size : float;
+    mutable running : bool;
+    mutable custom_direction : (float * float) option;
   }
 
   let add_sick_creet_ref : (t -> unit) ref = ref (fun _ -> ())
@@ -240,6 +250,8 @@ module%client Creet = struct
       status = config.status;
       grabbed = false;
       size = Settings.get_creet_size ();
+      running = false;
+      custom_direction = None;
     }
     |> fun creet ->
     apply_status_style creet;
@@ -280,6 +292,155 @@ module%client Creet = struct
     creet.grabbed <- grabbed;
     apply_status_style creet
 
+end
+
+module%client Creet_runner = struct
+  open Js_of_ocaml_lwt
+  open Lwt.Infix
+
+  let get_healthy_creets_ref : (unit -> Creet.t list) ref = ref (fun () -> [])
+  let spawn_spec_ref : (creet_spec -> unit) ref = ref (fun _ -> ())
+  let fresh_id_ref : (unit -> int) ref = ref (fun () -> 0)
+
+  let register_state_hooks ~get_healthy_creets ~spawn_spec ~fresh_id =
+    get_healthy_creets_ref := get_healthy_creets;
+    spawn_spec_ref := spawn_spec;
+    fresh_id_ref := fresh_id
+
+  let random_direction () =
+    let angle = (Js_of_ocaml.Js.math##random) *. 2. *. 3.141592653589793 in
+    Creet.normalize (cos angle) (sin angle)
+
+  let should_turn (creet : Creet.t) =
+    let threshold =
+      Config.initial_chance +. (Config.step *. creet.time_since_last_change)
+    in
+    if threshold <= 0. then false
+    else
+      let clamped_threshold = min threshold Config.max_chance in
+      let random_val = (Js_of_ocaml.Js.math##random) *. 100. in
+      random_val < clamped_threshold
+
+  let random_turn (creet : Creet.t) =
+    let dir_x, dir_y = random_direction () in
+    creet.dir_x <- dir_x;
+    creet.dir_y <- dir_y;
+    creet.time_since_last_change <- 0.
+
+  let attempt_reproduction (creet : Creet.t) =
+    if creet.status = Healthy then (
+      creet.reproduction_timer <-
+        creet.reproduction_timer +. Config.frame_duration;
+      let rec loop () =
+        if creet.reproduction_timer >= 1. then (
+          creet.reproduction_timer <- creet.reproduction_timer -. 1.;
+          let roll = (Js_of_ocaml.Js.math##random) *. 100. in
+          if roll < Config.reproduction_chance then (
+            let dir_x, dir_y = random_direction () in
+            let spec =
+              {
+                id = (!fresh_id_ref) ();
+                x = creet.x;
+                y = creet.y;
+                dir_x;
+                dir_y;
+                status = Healthy;
+              }
+            in
+            (!spawn_spec_ref) spec);
+          loop ())
+      in
+      loop ())
+
+  let clamp v low high = max low (min v high)
+
+  let handle_bounds (creet : Creet.t) =
+    let max_x_actual = Settings.get_map_width () -. creet.size in
+    let max_y_actual = Settings.get_map_height () -. creet.size in
+    let hit_left = creet.x <= 0. && creet.dir_x < 0. in
+    let hit_right = creet.x >= max_x_actual && creet.dir_x > 0. in
+    let hit_top = creet.y <= 0. && creet.dir_y < 0. in
+    let hit_bottom = creet.y >= max_y_actual && creet.dir_y > 0. in
+    let hit_x = hit_left || hit_right in
+    let hit_y = hit_top || hit_bottom in
+    if hit_x then creet.dir_x <- -.creet.dir_x;
+    if hit_y then creet.dir_y <- -.creet.dir_y;
+    if hit_top then Creet.become_sick creet;
+    creet.x <- clamp creet.x 0. max_x_actual;
+    creet.y <- clamp creet.y 0. max_y_actual
+
+  let update_mean_behavior (creet : Creet.t) =
+    match creet.custom_direction with
+    | Some (dir_x, dir_y) ->
+        if dir_x = 0. && dir_y = 0. then (
+          (* No target found, use normal wandering *)
+          if should_turn creet then random_turn creet)
+        else (
+          (* Use quadtree-provided direction *)
+          creet.dir_x <- dir_x;
+          creet.dir_y <- dir_y;
+          creet.time_since_last_change <- 0.;
+          creet.custom_direction <- None)
+    | None ->
+        (* No custom direction set yet, use normal wandering *)
+        if should_turn creet then random_turn creet
+
+  let grow_berserk (creet : Creet.t) =
+    if creet.status = Berserk then (
+      let max_size =
+        Settings.get_creet_size () +. Settings.get_berserk_extra_size ()
+      in
+      if creet.size < max_size then (
+        let increment =
+          Settings.get_berserk_size_increment () *. Config.frame_duration
+        in
+        creet.size <- min max_size (creet.size +. increment);
+        Creet.update_size creet))
+
+  let update_step (creet : Creet.t) =
+    if creet.grabbed then
+      Creet.update_position creet
+    else (
+      creet.time_since_last_change <-
+        creet.time_since_last_change +. Config.frame_duration;
+      (if creet.status = Mean then update_mean_behavior creet
+      else if should_turn creet then random_turn creet);
+      attempt_reproduction creet;
+      grow_berserk creet;
+      let speed_base = Settings.get_speed () in
+      let speed_increment_per_second =
+        Settings.get_speed_increment_per_second ()
+      in
+      let current_speed =
+        speed_base +. (speed_increment_per_second *. Game_time.get ())
+      in
+      let step =
+        current_speed
+        *. (if creet.status <> Healthy then Settings.get_sick_speed_modifier ()
+           else 1.)
+        *. Config.frame_duration
+      in
+      creet.x <- creet.x +. (creet.dir_x *. step);
+      creet.y <- creet.y +. (creet.dir_y *. step);
+      let max_x_actual = Settings.get_map_width () -. creet.size in
+      let max_y_actual = Settings.get_map_height () -. creet.size in
+      creet.x <- clamp creet.x 0. max_x_actual;
+      creet.y <- clamp creet.y 0. max_y_actual;
+      handle_bounds creet;
+      Creet.update_position creet)
+
+  let rec loop (creet : Creet.t) =
+    if creet.running then (
+      update_step creet;
+      Lwt_js.sleep Config.frame_duration >>= fun () -> loop creet)
+    else Lwt.return_unit
+
+  let start (creet : Creet.t) =
+    if not creet.running then (
+      creet.running <- true;
+      Lwt.async (fun () -> loop creet))
+
+  let stop (creet : Creet.t) = creet.running <- false
 end
 
 module%client Quadtree = struct
@@ -414,7 +575,17 @@ module%client Quadtree = struct
         (radius *. 2.)
         (radius *. 2.)
     in
-    query bounds tree []
+    let candidates = query bounds tree [] in
+    let radius_squared = radius *. radius in
+    List.filter
+      (fun (creet : Creet.t) ->
+        let creet_center_x = creet.x +. (creet.size /. 2.) in
+        let creet_center_y = creet.y +. (creet.size /. 2.) in
+        let dx = creet_center_x -. center_x in
+        let dy = creet_center_y -. center_y in
+        let distance_squared = (dx *. dx) +. (dy *. dy) in
+        distance_squared <= radius_squared)
+      candidates
 
 end
 
@@ -447,6 +618,7 @@ module%client State = struct
         if c.status = Healthy then add_to_table healthy_creets_table c
         else add_to_table sick_creets_table c)
       creets;
+    List.iter Creet_runner.start creets;
     notify_if_no_healthy ()
 
   let clear_creets () =
@@ -455,6 +627,7 @@ module%client State = struct
     | Some map ->
         List.iter
           (fun (creet : Creet.t) ->
+            Creet_runner.stop creet;
             Dom.removeChild map (creet.node :> Dom.node Js.t))
           !active_creets);
     active_creets := [];
@@ -471,7 +644,8 @@ module%client State = struct
   let add_creet creet =
     active_creets := creet :: !active_creets;
     if creet.status = Healthy then add_to_table healthy_creets_table creet
-    else add_to_table sick_creets_table creet
+    else add_to_table sick_creets_table creet;
+    Creet_runner.start creet
 
   let add_sick_creet creet = add_to_table sick_creets_table creet
 
@@ -507,6 +681,12 @@ module%client State = struct
         let creet = Creet.spawn spec map in
         add_creet creet;
         Some creet
+
+  let () =
+    Creet_runner.register_state_hooks
+      ~get_healthy_creets:healthy_creets_list
+      ~spawn_spec:(fun spec -> ignore (spawn_spec spec))
+      ~fresh_id:fresh_id
 end
 
 module%client Interaction = struct
@@ -742,84 +922,6 @@ module%client Game_loop = struct
   open Js_of_ocaml_lwt
   open Lwt.Infix
 
-  let elapsed_time : float ref = ref 0.
-
-  let reset_elapsed_time () = elapsed_time := 0.
-  let get_elapsed_time () = !elapsed_time
-
-  let min_x = 0.
-  let min_y = 0.
-
-  let clamp v low high =
-    max low (min v high)
-
-  let normalize dx dy =
-    let mag = sqrt ((dx *. dx) +. (dy *. dy)) in
-    if mag = 0. then (1., 0.) else (dx /. mag, dy /. mag)
-
-  let reflect (creet : Creet.t) hit_x hit_y =
-    if hit_x then creet.dir_x <- -.creet.dir_x;
-    if hit_y then creet.dir_y <- -.creet.dir_y;
-    let dir_x, dir_y = normalize creet.dir_x creet.dir_y in
-    creet.dir_x <- dir_x;
-    creet.dir_y <- dir_y
-
-  let random_direction () =
-    let angle = (Js.math##random) *. 2. *. 3.141592653589793 in
-    normalize (cos angle) (sin angle)
-
-  let should_turn (creet : Creet.t) =
-    let threshold = Config.initial_chance +. (Config.step *. creet.time_since_last_change) in
-    if threshold <= 0. then false
-    else
-      let clamped_threshold = min threshold Config.max_chance in
-      let random_val = (Js.math##random) *. 100. in
-      random_val < clamped_threshold
-
-  let random_turn (creet : Creet.t) =
-    let dir_x, dir_y = random_direction () in
-    creet.dir_x <- dir_x;
-    creet.dir_y <- dir_y;
-    creet.time_since_last_change <- 0.
-
-  let attempt_reproduction (creet : Creet.t) =
-    if creet.status = Healthy then (
-      creet.reproduction_timer <- creet.reproduction_timer +. Config.frame_duration;
-      let rec loop () =
-        if creet.reproduction_timer >= 1. then (
-          creet.reproduction_timer <- creet.reproduction_timer -. 1.;
-          let roll = (Js.math##random) *. 100. in
-          if roll < Config.reproduction_chance then (
-            let dir_x, dir_y = random_direction () in
-            let spec =
-              {
-                id = State.fresh_id ();
-                x = creet.x;
-                y = creet.y;
-                dir_x;
-                dir_y;
-                status = Healthy;
-              }
-            in
-            ignore (State.spawn_spec spec));
-          loop ())
-      in
-      loop ())
-  let handle_bounds (creet : Creet.t) =
-    let max_x_actual = Settings.get_map_width () -. creet.size in
-    let max_y_actual = Settings.get_map_height () -. creet.size in
-    let hit_left = creet.x <= min_x && creet.dir_x < 0. in
-    let hit_right = creet.x >= max_x_actual && creet.dir_x > 0. in
-    let hit_top = creet.y <= min_y && creet.dir_y < 0. in
-    let hit_bottom = creet.y >= max_y_actual && creet.dir_y > 0. in
-    let hit_x = hit_left || hit_right in
-    let hit_y = hit_top || hit_bottom in
-    if hit_x || hit_y then (
-      reflect creet hit_x hit_y;
-      if hit_top then Creet.become_sick creet;
-      creet.x <- clamp creet.x min_x max_x_actual;
-      creet.y <- clamp creet.y min_y max_y_actual)
-
   let creets_collide (creet1 : Creet.t) (creet2 : Creet.t) =
     let dx = creet2.x -. creet1.x in
     let dy = creet2.y -. creet1.y in
@@ -834,6 +936,39 @@ module%client Game_loop = struct
     State.iter_sick_creets
       (fun (sick_creet : Creet.t) ->
         if not sick_creet.grabbed then (
+          (* Handle mean creet targeting *)
+          if sick_creet.status = Mean then (
+            let creet_center_x = sick_creet.x +. (sick_creet.size /. 2.) in
+            let creet_center_y = sick_creet.y +. (sick_creet.size /. 2.) in
+            let detection_radius = Settings.get_mean_detection_radius () in
+            let nearby_healthy = Quadtree.query_circle creet_center_x creet_center_y detection_radius tree in
+            match nearby_healthy with
+            | [] -> sick_creet.custom_direction <- Some (0., 0.)
+            | healthy_creets ->
+                let best_target, _ =
+                  List.fold_left
+                    (fun (best, best_dist) (target : Creet.t) ->
+                      let target_center_x = target.x +. (target.size /. 2.) in
+                      let target_center_y = target.y +. (target.size /. 2.) in
+                      let dx = target_center_x -. creet_center_x in
+                      let dy = target_center_y -. creet_center_y in
+                      let distance_squared = (dx *. dx) +. (dy *. dy) in
+                      if best = None || distance_squared < best_dist then
+                        (Some target, distance_squared)
+                      else (best, best_dist))
+                    (None, detection_radius *. detection_radius)
+                    healthy_creets
+                in
+                match best_target with
+                | None -> sick_creet.custom_direction <- Some (0., 0.)
+                | Some target ->
+                    let target_center_x = target.x +. (target.size /. 2.) in
+                    let target_center_y = target.y +. (target.size /. 2.) in
+                    let dx = target_center_x -. creet_center_x in
+                    let dy = target_center_y -. creet_center_y in
+                    let dir_x, dir_y = Creet.normalize dx dy in
+                    sick_creet.custom_direction <- Some (dir_x, dir_y));
+          (* Handle collision-based infection *)
           let nearby = Quadtree.find_nearby sick_creet tree in
           List.iter
             (fun (other_creet : Creet.t) ->
@@ -842,98 +977,15 @@ module%client Game_loop = struct
                 if roll < Config.infection_chance then Creet.become_sick other_creet))
             nearby))
 
-  let find_closest_healthy_creet (creet : Creet.t) (tree : Quadtree.t) =
-    let creet_center_x = creet.x +. (creet.size /. 2.) in
-    let creet_center_y = creet.y +. (creet.size /. 2.) in
-    let detection_radius = Settings.get_mean_detection_radius () in
-    let detection_radius_squared = detection_radius *. detection_radius in
-    (* Use quadtree to find creets within detection radius *)
-    let nearby_creets : Creet.t list =
-      Quadtree.query_circle creet_center_x creet_center_y detection_radius tree
-    in
-    (* nearby_creets already contains only healthy creets; find closest *)
-    let rec find_closest
-        (best_creet : Creet.t option)
-        (best_distance_squared : float)
-        (remaining : Creet.t list) =
-      match remaining with
-      | [] -> best_creet
-      | (other : Creet.t) :: rest ->
-          let other_center_x = other.x +. (other.size /. 2.) in
-          let other_center_y = other.y +. (other.size /. 2.) in
-          let dx = other_center_x -. creet_center_x in
-          let dy = other_center_y -. creet_center_y in
-          let distance_squared = (dx *. dx) +. (dy *. dy) in
-          if distance_squared <= detection_radius_squared
-             && (best_creet = None || distance_squared < best_distance_squared)
-          then find_closest (Some other) distance_squared rest
-          else find_closest best_creet best_distance_squared rest
-    in
-    find_closest None 1e10 nearby_creets
-
-  let advance (creet : Creet.t) (tree : Quadtree.t) =
-    if creet.grabbed then (
-      Creet.update_position creet)
-    else (
-      creet.time_since_last_change <- creet.time_since_last_change +. Config.frame_duration;
-      (* Mean creets target closest healthy creet *)
-      if creet.status = Mean then (
-        match find_closest_healthy_creet creet tree with
-        | None -> if should_turn creet then random_turn creet
-        | Some target ->
-            let creet_center_x = creet.x +. (creet.size /. 2.) in
-            let creet_center_y = creet.y +. (creet.size /. 2.) in
-            let target_center_x = target.x +. (target.size /. 2.) in
-            let target_center_y = target.y +. (target.size /. 2.) in
-            let dx = target_center_x -. creet_center_x in
-            let dy = target_center_y -. creet_center_y in
-            let dir_x, dir_y = normalize dx dy in
-            creet.dir_x <- dir_x;
-            creet.dir_y <- dir_y;
-            creet.time_since_last_change <- 0.)
-      else if should_turn creet then random_turn creet;
-      attempt_reproduction creet;
-      (* Grow berserk creets over time *)
-      if creet.status = Berserk then (
-        let max_size =
-          Settings.get_creet_size () +. Settings.get_berserk_extra_size ()
-        in
-        if creet.size < max_size then (
-          let increment =
-            Settings.get_berserk_size_increment () *. Config.frame_duration
-          in
-          creet.size <- min max_size (creet.size +. increment);
-          Creet.update_size creet));
-      let speed_base = Settings.get_speed () in
-      let speed_increment_per_second = Settings.get_speed_increment_per_second () in
-      let current_speed =
-        speed_base +. (speed_increment_per_second *. !elapsed_time)
-      in
-      let step =
-        current_speed
-        *. (if creet.status <> Healthy then Settings.get_sick_speed_modifier ()
-           else 1.)
-        *. Config.frame_duration
-      in
-      creet.x <- creet.x +. (creet.dir_x *. step);
-      creet.y <- creet.y +. (creet.dir_y *. step);
-      let max_x_actual = Settings.get_map_width () -. creet.size in
-      let max_y_actual = Settings.get_map_height () -. creet.size in
-      creet.x <- clamp creet.x min_x max_x_actual;
-      creet.y <- clamp creet.y min_y max_y_actual;
-      handle_bounds creet;
-      Creet.update_position creet)
-
   let rec tick () =
-    elapsed_time := !elapsed_time +. Config.frame_duration;
-    (* Build quadtree with only healthy creets for targeting/infection *)
+    Game_time.add Config.frame_duration;
     let tree = Quadtree.build (State.healthy_creets_list ()) in
-    List.iter (fun creet -> advance creet tree) !(State.active_creets);
     handle_collisions tree;
+    let elapsed = Game_time.get () in
     let speed_increment =
-      Settings.get_speed_increment_per_second () *. !elapsed_time
+      Settings.get_speed_increment_per_second () *. elapsed
     in
-    Counters.update ~elapsed_time:!elapsed_time ~speed_increment;
+    Counters.update ~elapsed_time:elapsed ~speed_increment;
     Lwt_js.sleep Config.frame_duration >>= tick
 
   let start () = Lwt.async (fun () -> tick ())
@@ -1140,7 +1192,7 @@ module%client Menu = struct
     hide_game_over ();
     hide_game_ui ();
     show_menu ();
-    Game_loop.reset_elapsed_time ();
+    Game_time.reset ();
     Counters.update ~elapsed_time:0. ~speed_increment:0.;
     Js._false
 
@@ -1186,7 +1238,7 @@ module%client Menu = struct
     World.reset_creets ();
     hide_menu ();
     show_game_ui ();
-    Game_loop.reset_elapsed_time ();
+    Game_time.reset ();
     Counters.update ~elapsed_time:0. ~speed_increment:0.;
     Js._false
 
@@ -1216,7 +1268,7 @@ end
 
 module%client Game_over_screen = struct
   let handle_no_healthy () =
-    let elapsed = Game_loop.get_elapsed_time () in
+    let elapsed = Game_time.get () in
     Menu.show_game_over_screen elapsed
 
   let () = State.set_on_no_healthy handle_no_healthy
