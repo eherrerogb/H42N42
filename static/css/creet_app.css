@@ -44,6 +44,7 @@ body {
     border-radius: 50%;
     position: absolute;
     transition: transform 0.2s ease;
+    z-index: 10;
 }
 
 .creet::after {
@@ -58,22 +59,26 @@ body {
     background: #c0392b;
     border-color: #641e16;
     cursor: grab;
+    z-index: 20;
 }
 
 .creet--berserk {
     background: #8b1a1a;
     border-color: #4a0e0e;
     opacity: 0.75;
+    z-index: 40;
 }
 
 .creet--mean {
     background: #4a0a0a;
     border-color: #2a0505;
+    z-index: 30;
 }
 
 .creet--grabbed {
     opacity: 0.5;
     cursor: grabbing;
+    z-index: 1000;
 }
 
 .creet:hover {

@@ -138,9 +138,7 @@ module%client Creet = struct
     let full_class =
       if creet.grabbed then base_class ^ " creet--grabbed" else base_class
     in
-    creet.node##.className := Js.string full_class;
-    if creet.grabbed then creet.node##.style##.zIndex := Js.string "1000"
-    else creet.node##.style##.zIndex := Js.string "1"
+    creet.node##.className := Js.string full_class
 
   let update_size creet =
     creet.node##.style##.width := Js.string (Printf.sprintf "%gpx" creet.size);
