@@ -94,15 +94,20 @@ module%client Settings = struct
 
   let get_map_width () = !map_width
   let get_map_height () = !map_height
-  let get_creet_size () = get_map_width () *. Constants.creet_size_ratio
-  let get_mean_size () = get_map_width () *. Constants.mean_size_ratio
+  let base_dimension () = min !map_width !map_height
+  let sized_with_min ratio minimum =
+    max minimum (base_dimension () *. ratio)
+  let get_creet_size () =
+    sized_with_min Constants.creet_size_ratio Constants.initial_creet_size
+  let get_mean_size () =
+    sized_with_min Constants.mean_size_ratio Constants.initial_mean_size
   let get_speed () = !speed
   let get_sick_speed_modifier () = !sick_speed_modifier
   let get_speed_increment_per_second () = !speed_increment
   let get_berserk_chance () = !berserk_chance
   let get_mean_chance () = !mean_chance
   let get_berserk_extra_size () =
-    get_map_width () *. Constants.berserk_extra_ratio
+    sized_with_min Constants.berserk_extra_ratio Constants.initial_berserk_extra_size
   let get_berserk_size_increment () = !berserk_size_increment
 
   let get_mean_detection_radius () = get_creet_size () *. 6.
