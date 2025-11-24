@@ -157,14 +157,17 @@ module%client Map_canvas = struct
 
   let map_id = "creet-map"
 
+  let apply_dimensions container =
+    container##.style##.width :=
+      Js.string (Printf.sprintf "%gpx" (Settings.get_map_width ()));
+    container##.style##.height :=
+      Js.string (Printf.sprintf "%gpx" (Settings.get_map_height ()))
+
   let create_empty () =
     let container = Dom_html.createDiv Dom_html.document in
     container##.id := Js.string map_id;
     container##.className := Js.string "map-area";
-    container##.style##.width :=
-      Js.string (Printf.sprintf "%gpx" (Settings.get_map_width ()));
-    container##.style##.height :=
-      Js.string (Printf.sprintf "%gpx" (Settings.get_map_height ()));
+    apply_dimensions container;
     container
 end
 
@@ -446,6 +449,18 @@ module%client State = struct
       creets;
     notify_if_no_healthy ()
 
+  let clear_creets () =
+    (match !map_container with
+    | None -> ()
+    | Some map ->
+        List.iter
+          (fun (creet : Creet.t) ->
+            Dom.removeChild map (creet.node :> Dom.node Js.t))
+          !active_creets);
+    active_creets := [];
+    Hashtbl.reset healthy_creets_table;
+    Hashtbl.reset sick_creets_table
+
   let set_next_id value = next_id := value
 
   let fresh_id () =
@@ -671,6 +686,7 @@ module%client Interaction = struct
                       release_creet ();
                       Lwt.return_unit)
                     else Lwt.return_unit))))
+  let force_release_grab () = release_creet ()
 end
 
 module%client Counters = struct
@@ -928,10 +944,30 @@ module%client World = struct
 
   let root_id = "app-root"
   let started = ref false
+  let shared_initial_creets : creet_spec list = ~%initial_creets
+
+  let compute_next_id specs =
+    List.fold_left (fun acc spec -> max acc spec.id) 0 specs + 1
+
+  let spawn_initial_creets map =
+    let creets =
+      List.map (fun spec -> Creet.spawn spec map) shared_initial_creets
+    in
+    State.set_creets creets;
+    State.set_next_id (compute_next_id shared_initial_creets)
 
   let get_root () =
     Js.Opt.to_option
       (Dom_html.document##getElementById (Js.string root_id))
+
+  let reset_creets () =
+    match !(State.map_container) with
+    | None -> ()
+    | Some map ->
+        Interaction.force_release_grab ();
+        State.clear_creets ();
+        Map_canvas.apply_dimensions map;
+        spawn_initial_creets map
 
   let mount () =
     if !started then ()
@@ -944,15 +980,7 @@ module%client World = struct
           Dom.appendChild root map;
           State.register_map map;
           Interaction.setup map;
-          let shared_creets = ~%initial_creets in
-          let next_id =
-            List.fold_left (fun acc spec -> max acc spec.id) 0 shared_creets + 1
-          in
-          State.set_next_id next_id;
-          let creets =
-            List.map (fun spec -> Creet.spawn spec map) shared_creets
-          in
-          State.set_creets creets;
+          spawn_initial_creets map;
           Game_loop.start ();
     )
 end
@@ -1154,9 +1182,10 @@ module%client Menu = struct
     Settings.set_mean_chance mean_chance;
     Settings.set_berserk_size_increment berserk_increment;
     hide_game_over ();
+    World.mount ();
+    World.reset_creets ();
     hide_menu ();
     show_game_ui ();
-    World.mount ();
     Game_loop.reset_elapsed_time ();
     Counters.update ~elapsed_time:0. ~speed_increment:0.;
     Js._false
