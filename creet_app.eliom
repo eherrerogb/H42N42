@@ -19,14 +19,8 @@ type%shared creet_spec = {
   dir_x : float;
   dir_y : float;
   status : creet_status;
-}
+} [@@ocaml.warning "-34"]
 
-let%shared initial_creets =
-  [
-    { id = 1; x = 40.; y = 60.; dir_x = 1.; dir_y = 0.3; status = Healthy };
-    { id = 2; x = 160.; y = 140.; dir_x = -0.6; dir_y = 0.9; status = Healthy };
-    { id = 3; x = 280.; y = 90.; dir_x = 0.2; dir_y = -1.; status = Healthy };
-  ]
 
 (* Create a module for the application. See
    https://ocsigen.org/eliom/manual/clientserver-applications for more
@@ -240,8 +234,6 @@ module%client Creet = struct
 
   let spawn (config : creet_spec) map_container =
     let node = create_node config in
-    node##.style##.left := Js.string (Printf.sprintf "%gpx" config.x);
-    node##.style##.top := Js.string (Printf.sprintf "%gpx" config.y);
     Dom.appendChild map_container node;
     let dir_x, dir_y = normalize config.dir_x config.dir_y in
     {
@@ -505,26 +497,24 @@ module%client Quadtree = struct
     else
       match tree with
       | Empty ->
-          let creets_list : Creet.t list = [ creet ] in
-          Leaf { bounds = bounds_param; creets = creets_list }
+          Leaf { bounds = bounds_param; creets = [ creet ] }
       | Leaf leaf ->
           if depth >= max_depth || List.length leaf.creets < max_objects then
             Leaf { bounds = bounds_param; creets = creet :: leaf.creets }
           else (
             let nw, ne, sw, se = subdivide bounds_param in
-            let empty = Empty in
             let nw_tree = List.fold_left
                             (fun t c -> insert c nw (depth + 1) t)
-                            empty leaf.creets in
+                            Empty leaf.creets in
             let ne_tree = List.fold_left
                             (fun t c -> insert c ne (depth + 1) t)
-                            empty leaf.creets in
+                            Empty leaf.creets in
             let sw_tree = List.fold_left
                             (fun t c -> insert c sw (depth + 1) t)
-                            empty leaf.creets in
+                            Empty leaf.creets in
             let se_tree = List.fold_left
                             (fun t c -> insert c se (depth + 1) t)
-                            empty leaf.creets in
+                            Empty leaf.creets in
             insert creet bounds_param depth
               (Node {
                   bounds = bounds_param;
@@ -793,26 +783,10 @@ module%client Interaction = struct
                         grab_offset := Some (offset_x, offset_y);
                         Creet.set_grabbed creet true;
                         grabbed_creet := Some creet;
-                        let console = Js.Unsafe.global##.console in
-                        ignore
-                          (console##log
-                             (Js.string
-                                ("Grab successful: Click at ("
-                               ^ string_of_float x ^ ", " ^ string_of_float y
-                               ^ "), grabbed creet at (" ^ string_of_float creet.x
-                               ^ ", " ^ string_of_float creet.y ^ ")")));
                         match !(State.map_container) with
                         | None -> ()
                         | Some map -> map##.classList##add (Js.string "grabbing"))
-                      else (
-                        let console = Js.Unsafe.global##.console in
-                        ignore
-                          (console##log
-                             (Js.string
-                                ("Grab failed: Creet at ("
-                               ^ string_of_float creet.x ^ ", "
-                               ^ string_of_float creet.y
-                               ^ ") is not sick"))))))))
+                      else ()))))
 
   let handle_mousemove (ev : Dom_html.mouseEvent Js.t) =
     match !grabbed_creet with
@@ -835,13 +809,7 @@ module%client Interaction = struct
                   let x, y = clamp_to_bounds creet x y in
                   creet.x <- x;
                   creet.y <- y;
-                  Creet.update_position creet;
-                  let min_x = 0. in
-                  let min_y = 0. in
-                  let max_x = Settings.get_map_width () -. creet.size in
-                  let max_y = Settings.get_map_height () -. creet.size in
-                  if x <= min_x || x >= max_x || y <= min_y || y >= max_y then
-                    release_creet ())))
+                  Creet.update_position creet)))
 
   let setup map =
     let map_element = (map :> Dom_html.element Js.t) in
@@ -951,25 +919,23 @@ module%client Game_loop = struct
             match nearby_healthy with
             | [] -> sick_creet.custom_direction <- Some (0., 0.)
             | healthy_creets ->
-                let best_target, _ =
+                let best_target, best_center, _ =
                   List.fold_left
-                    (fun (best, best_dist) (target : Creet.t) ->
+                    (fun (best, best_center, best_dist) (target : Creet.t) ->
                       let target_center_x = target.x +. (target.size /. 2.) in
                       let target_center_y = target.y +. (target.size /. 2.) in
                       let dx = target_center_x -. creet_center_x in
                       let dy = target_center_y -. creet_center_y in
                       let distance_squared = (dx *. dx) +. (dy *. dy) in
                       if best = None || distance_squared < best_dist then
-                        (Some target, distance_squared)
-                      else (best, best_dist))
-                    (None, detection_radius *. detection_radius)
+                        (Some target, Some (target_center_x, target_center_y), distance_squared)
+                      else (best, best_center, best_dist))
+                    (None, None, detection_radius *. detection_radius)
                     healthy_creets
                 in
-                match best_target with
-                | None -> sick_creet.custom_direction <- Some (0., 0.)
-                | Some target ->
-                    let target_center_x = target.x +. (target.size /. 2.) in
-                    let target_center_y = target.y +. (target.size /. 2.) in
+                match (best_target, best_center) with
+                | None, _ | _, None -> sick_creet.custom_direction <- Some (0., 0.)
+                | Some _, Some (target_center_x, target_center_y) ->
                     let dx = target_center_x -. creet_center_x in
                     let dy = target_center_y -. creet_center_y in
                     let dir_x, dir_y = Creet.normalize dx dy in
@@ -1028,7 +994,7 @@ module%client World = struct
     let creet_specs = generate_creets count [] in
     let creets = List.map (fun spec -> Creet.spawn spec map) creet_specs in
     State.set_creets creets;
-    State.set_next_id (List.fold_left (fun acc spec -> max acc spec.id) 0 creet_specs + 1)
+    State.set_next_id (count + 1)
 
   let get_root () =
     Js.Opt.to_option
@@ -1204,7 +1170,7 @@ module%client Menu = struct
     parse_float_with_limits id ~default ~min_value:100. ~max_value:None
 
   let parse_range id default ~min_value ~max_value =
-    parse_float_with_limits id ~default ~min_value:(min_value) ~max_value:(Some max_value)
+    parse_float_with_limits id ~default ~min_value ~max_value:(Some max_value)
 
   let parse_percentage id default =
     parse_float_with_limits id ~default ~min_value:0. ~max_value:(Some 100.)
@@ -1216,8 +1182,8 @@ module%client Menu = struct
         let raw = Js.to_string input##.value in
         try
           let v = int_of_string raw in
-          let clamped = max min_value (match max_value with None -> v | Some max_v -> min v max_v) in
-          clamped
+          let v = max min_value v in
+          match max_value with None -> v | Some max_v -> min v max_v
         with _ -> default
 
   let handle_reset _ =
@@ -1484,9 +1450,6 @@ let%shared () =
                      ~a:[
                        a_id "app-root";
                        a_class ["app-root"];
-                       a_user_data
-                         "creet-count"
-                         (string_of_int (List.length initial_creets));
                      ]
                      [];
                    div
