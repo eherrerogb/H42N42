@@ -85,21 +85,40 @@ end
 module%client Settings = struct
   let default_map_width = Constants.initial_map_width
   let default_map_height = Constants.initial_map_height
+  let default_speed = Config.speed
+  let default_sick_speed_modifier = Config.sick_speed_modifier
+  let default_speed_increment = Config.speed_increment_per_second
+
   let map_width = ref default_map_width
   let map_height = ref default_map_height
+  let speed = ref default_speed
+  let sick_speed_modifier = ref default_sick_speed_modifier
+  let speed_increment = ref default_speed_increment
 
   let get_map_width () = !map_width
   let get_map_height () = !map_height
+  let get_speed () = !speed
+  let get_sick_speed_modifier () = !sick_speed_modifier
+  let get_speed_increment_per_second () = !speed_increment
 
   let get_default_map_width () = default_map_width
   let get_default_map_height () = default_map_height
+  let get_default_speed () = default_speed
+  let get_default_sick_speed_modifier () = default_sick_speed_modifier
+  let get_default_speed_increment () = default_speed_increment
 
   let set_map_width v = map_width := v
   let set_map_height v = map_height := v
+  let set_speed v = speed := v
+  let set_sick_speed_modifier v = sick_speed_modifier := v
+  let set_speed_increment_per_second v = speed_increment := v
 
   let reset () =
     map_width := default_map_width;
-    map_height := default_map_height
+    map_height := default_map_height;
+    speed := default_speed;
+    sick_speed_modifier := default_sick_speed_modifier;
+    speed_increment := default_speed_increment
 end
 
 module%client Map_canvas = struct
@@ -817,10 +836,15 @@ module%client Game_loop = struct
             min max_size
               (creet.size +. (Config.berserk_size_increment_per_second *. Config.frame_duration));
           Creet.update_size creet));
-      let current_speed = Config.speed +. (Config.speed_increment_per_second *. !elapsed_time) in
+      let speed_base = Settings.get_speed () in
+      let speed_increment_per_second = Settings.get_speed_increment_per_second () in
+      let current_speed =
+        speed_base +. (speed_increment_per_second *. !elapsed_time)
+      in
       let step =
         current_speed
-        *. (if creet.status <> Healthy then Config.sick_speed_modifier else 1.)
+        *. (if creet.status <> Healthy then Settings.get_sick_speed_modifier ()
+           else 1.)
         *. Config.frame_duration
       in
       creet.x <- creet.x +. (creet.dir_x *. step);
@@ -839,7 +863,7 @@ module%client Game_loop = struct
     List.iter (fun creet -> advance creet tree) !(State.active_creets);
     handle_collisions tree;
     let speed_increment =
-      Config.speed_increment_per_second *. !elapsed_time
+      Settings.get_speed_increment_per_second () *. !elapsed_time
     in
     Counters.update ~elapsed_time:!elapsed_time ~speed_increment;
     Lwt_js.sleep Config.frame_duration >>= tick
@@ -888,6 +912,9 @@ module%client Menu = struct
   let game_ui_id = "game-ui"
   let width_input_id = "map-width-input"
   let height_input_id = "map-height-input"
+  let speed_input_id = "speed-input"
+  let sick_speed_input_id = "sick-speed-input"
+  let speed_increment_input_id = "speed-increment-input"
   let play_button_id = "play-button"
   let reset_button_id = "reset-button"
 
@@ -899,6 +926,37 @@ module%client Menu = struct
     match get_element id with
     | None -> None
     | Some el -> Js.Opt.to_option (Dom_html.CoerceTo.input el)
+
+  let set_input_attribute input name value =
+    ignore (input##setAttribute (Js.string name) (Js.string value))
+
+  let configure_inputs () =
+    (match get_input width_input_id with
+    | Some input ->
+        set_input_attribute input "min" "100";
+        set_input_attribute input "step" "10"
+    | None -> ());
+    (match get_input height_input_id with
+    | Some input ->
+        set_input_attribute input "min" "100";
+        set_input_attribute input "step" "10"
+    | None -> ());
+    (match get_input speed_input_id with
+    | Some input ->
+        set_input_attribute input "min" "1";
+        set_input_attribute input "step" "1"
+    | None -> ());
+    (match get_input sick_speed_input_id with
+    | Some input ->
+        set_input_attribute input "min" "0.1";
+        set_input_attribute input "max" "1";
+        set_input_attribute input "step" "0.01"
+    | None -> ());
+    (match get_input speed_increment_input_id with
+    | Some input ->
+        set_input_attribute input "min" "0";
+        set_input_attribute input "step" "0.1"
+    | None -> ())
 
   let add_class el cls = ignore (el##.classList##add (Js.string cls))
   let remove_class el cls = ignore (el##.classList##remove (Js.string cls))
@@ -913,41 +971,70 @@ module%client Menu = struct
     | Some el -> add_class el "hidden"
     | None -> ()
 
-  let string_of_px value =
+  let format_float value =
     let fractional = abs_float (value -. floor value) in
     if fractional < 0.001 then Printf.sprintf "%.0f" value
     else Printf.sprintf "%.2f" value
 
   let set_input_value id value =
     match get_input id with
-    | Some input -> input##.value := Js.string (string_of_px value)
+    | Some input -> input##.value := Js.string (format_float value)
     | None -> ()
 
-  let parse_input_value id default =
+  let clamp value min_value max_value =
+    let v = if value < min_value then min_value else value in
+    match max_value with
+    | None -> v
+    | Some max_v -> if v > max_v then max_v else v
+
+  let parse_float_with_limits id ~default ~min_value ~max_value =
     match get_input id with
     | None -> default
     | Some input ->
         let raw = Js.to_string input##.value in
         try
           let v = float_of_string raw in
-          if v < 100. then default else v
+          clamp v min_value max_value
         with _ -> default
+
+  let parse_dimension id default =
+    parse_float_with_limits id ~default ~min_value:100. ~max_value:None
+
+  let parse_range id default ~min_value ~max_value =
+    parse_float_with_limits id ~default ~min_value:(min_value) ~max_value:(Some max_value)
 
   let handle_reset _ =
     Settings.reset ();
     set_input_value width_input_id (Settings.get_default_map_width ());
     set_input_value height_input_id (Settings.get_default_map_height ());
+    set_input_value speed_input_id (Settings.get_default_speed ());
+    set_input_value sick_speed_input_id (Settings.get_default_sick_speed_modifier ());
+    set_input_value speed_increment_input_id (Settings.get_default_speed_increment ());
     Js._false
 
   let handle_play _ =
-    let width =
-      parse_input_value width_input_id (Settings.get_map_width ())
-    in
+    let width = parse_dimension width_input_id (Settings.get_map_width ()) in
     let height =
-      parse_input_value height_input_id (Settings.get_map_height ())
+      parse_dimension height_input_id (Settings.get_map_height ())
+    in
+    let speed =
+      parse_float_with_limits speed_input_id
+        ~default:(Settings.get_speed ()) ~min_value:1. ~max_value:None
+    in
+    let sick_modifier =
+      parse_range sick_speed_input_id (Settings.get_sick_speed_modifier ())
+        ~min_value:0.1 ~max_value:1.
+    in
+    let speed_increment =
+      parse_float_with_limits speed_increment_input_id
+        ~default:(Settings.get_speed_increment_per_second ()) ~min_value:0.
+        ~max_value:None
     in
     Settings.set_map_width width;
     Settings.set_map_height height;
+    Settings.set_speed speed;
+    Settings.set_sick_speed_modifier sick_modifier;
+    Settings.set_speed_increment_per_second speed_increment;
     hide_menu ();
     show_game_ui ();
     World.mount ();
@@ -962,8 +1049,13 @@ module%client Menu = struct
              (Dom_html.handler handler) Js._false)
 
   let init () =
+    configure_inputs ();
     set_input_value width_input_id (Settings.get_map_width ());
     set_input_value height_input_id (Settings.get_map_height ());
+    set_input_value speed_input_id (Settings.get_speed ());
+    set_input_value sick_speed_input_id (Settings.get_sick_speed_modifier ());
+    set_input_value speed_increment_input_id
+      (Settings.get_speed_increment_per_second ());
     attach_click play_button_id handle_play;
     attach_click reset_button_id handle_reset
 end
@@ -1000,39 +1092,82 @@ let%shared () =
           (body
              [
                h1 [txt "Creet MVP"];
-               div
-                 ~a:[a_id "menu-screen"; a_class ["menu-screen"]]
-                 [
-                   h2 [txt "Settings"];
-                   div
-                     ~a:[a_class ["menu__group"]]
-                     [
-                       label ~a:[a_label_for "map-width-input"] [txt "Map width (px)"];
-                       input
-                         ~a:[
-                           a_id "map-width-input";
-                           a_input_type `Number;
-                         ]
-                         ();
-                     ];
-                   div
-                     ~a:[a_class ["menu__group"]]
-                     [
-                       label ~a:[a_label_for "map-height-input"] [txt "Map height (px)"];
-                       input
-                         ~a:[
-                           a_id "map-height-input";
-                           a_input_type `Number;
-                         ]
-                         ();
-                     ];
-                   div
-                     ~a:[a_class ["menu__actions"]]
-                     [
-                       button ~a:[a_id "reset-button"; a_class ["menu__button"]] [txt "Reset"];
-                       button ~a:[a_id "play-button"; a_class ["menu__button"; "menu__button--primary"]] [txt "Play"];
-                     ];
-                 ];
+              div
+                ~a:[a_id "menu-screen"; a_class ["menu-screen"]]
+                [
+                  h2 [txt "Settings"];
+                  div
+                    ~a:[a_class ["menu__section"]]
+                    [
+                      h3 [txt "Map"];
+                      div
+                        ~a:[a_class ["menu__group"]]
+                        [
+                          label ~a:[a_label_for "map-width-input"] [txt "Map width (px)"];
+                          input
+                            ~a:[
+                              a_id "map-width-input";
+                              a_input_type `Number;
+                            ]
+                            ();
+                        ];
+                      div
+                        ~a:[a_class ["menu__group"]]
+                        [
+                          label ~a:[a_label_for "map-height-input"] [txt "Map height (px)"];
+                          input
+                            ~a:[
+                              a_id "map-height-input";
+                              a_input_type `Number;
+                            ]
+                            ();
+                        ];
+                    ];
+                  div
+                    ~a:[a_class ["menu__section"]]
+                    [
+                      h3 [txt "Movement"];
+                      div
+                        ~a:[a_class ["menu__group"]]
+                        [
+                          label ~a:[a_label_for "speed-input"] [txt "Base speed"];
+                          input
+                            ~a:[
+                              a_id "speed-input";
+                              a_input_type `Number;
+                            ]
+                            ();
+                        ];
+                      div
+                        ~a:[a_class ["menu__group"]]
+                        [
+                          label ~a:[a_label_for "sick-speed-input"] [txt "Sick speed modifier (0.1 - 1.0)"];
+                          input
+                            ~a:[
+                              a_id "sick-speed-input";
+                              a_input_type `Range;
+                            ]
+                            ();
+                        ];
+                      div
+                        ~a:[a_class ["menu__group"]]
+                        [
+                          label ~a:[a_label_for "speed-increment-input"] [txt "Speed increment per second"];
+                          input
+                            ~a:[
+                              a_id "speed-increment-input";
+                              a_input_type `Number;
+                            ]
+                            ();
+                        ];
+                    ];
+                  div
+                    ~a:[a_class ["menu__actions"]]
+                    [
+                      button ~a:[a_id "reset-button"; a_class ["menu__button"]] [txt "Reset"];
+                      button ~a:[a_id "play-button"; a_class ["menu__button"; "menu__button--primary"]] [txt "Play"];
+                    ];
+                ];
                div
                  ~a:[a_id "game-ui"; a_class ["game-ui"; "hidden"]]
                  [
