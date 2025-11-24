@@ -422,6 +422,7 @@ module%client State = struct
   let sick_creets_table : (int, Creet.t) Hashtbl.t = Hashtbl.create 64
   let map_container : Dom_html.divElement Js.t option ref = ref None
   let next_id = ref 0
+  let on_no_healthy_ref : (unit -> unit) ref = ref (fun () -> ())
 
   let register_map map = map_container := Some map
 
@@ -431,6 +432,9 @@ module%client State = struct
   let remove_from_table table (creet : Creet.t) =
     Hashtbl.remove table creet.spec.id
 
+  let notify_if_no_healthy () =
+    if Hashtbl.length healthy_creets_table = 0 then !on_no_healthy_ref ()
+
   let set_creets (creets : Creet.t list) =
     active_creets := creets;
     Hashtbl.reset healthy_creets_table;
@@ -439,7 +443,8 @@ module%client State = struct
       (fun (c : Creet.t) ->
         if c.status = Healthy then add_to_table healthy_creets_table c
         else add_to_table sick_creets_table c)
-      creets
+      creets;
+    notify_if_no_healthy ()
 
   let set_next_id value = next_id := value
 
@@ -459,7 +464,9 @@ module%client State = struct
 
   let add_healthy_creet creet = add_to_table healthy_creets_table creet
 
-  let remove_healthy_creet creet = remove_from_table healthy_creets_table creet
+  let remove_healthy_creet creet =
+    remove_from_table healthy_creets_table creet;
+    notify_if_no_healthy ()
 
   let healthy_creets_list () =
     Hashtbl.fold (fun _ (c : Creet.t) acc -> c :: acc) healthy_creets_table []
@@ -475,6 +482,8 @@ module%client State = struct
     Creet.remove_sick_creet_ref := remove_sick_creet;
     Creet.add_healthy_creet_ref := add_healthy_creet;
     Creet.remove_healthy_creet_ref := remove_healthy_creet
+
+  let set_on_no_healthy handler = on_no_healthy_ref := handler
 
   let spawn_spec spec =
     match !map_container with
@@ -719,6 +728,9 @@ module%client Game_loop = struct
 
   let elapsed_time : float ref = ref 0.
 
+  let reset_elapsed_time () = elapsed_time := 0.
+  let get_elapsed_time () = !elapsed_time
+
   let min_x = 0.
   let min_y = 0.
 
@@ -950,6 +962,8 @@ module%client Menu = struct
 
   let menu_id = "menu-screen"
   let game_ui_id = "game-ui"
+  let game_over_id = "game-over-screen"
+  let game_over_time_id = "game-over-time"
   let width_input_id = "map-width-input"
   let height_input_id = "map-height-input"
   let speed_input_id = "speed-input"
@@ -960,6 +974,7 @@ module%client Menu = struct
   let berserk_increment_input_id = "berserk-size-increment-input"
   let play_button_id = "play-button"
   let reset_button_id = "reset-button"
+  let go_to_menu_button_id = "go-to-menu-button"
 
   let get_element id =
     Js.Opt.to_option
@@ -1018,18 +1033,33 @@ module%client Menu = struct
         set_input_attribute input "step" "0.1"
     | None -> ())
 
-  let add_class el cls = ignore (el##.classList##add (Js.string cls))
-  let remove_class el cls = ignore (el##.classList##remove (Js.string cls))
-
-  let show_game_ui () =
-    match get_element game_ui_id with
-    | Some el -> remove_class el "hidden"
+  let set_hidden id hidden =
+    match get_element id with
     | None -> ()
+    | Some el ->
+        let cls = Js.string "hidden" in
+        if hidden then ignore (el##.classList##add cls)
+        else ignore (el##.classList##remove cls)
 
-  let hide_menu () =
-    match get_element menu_id with
-    | Some el -> add_class el "hidden"
+  let show_menu () = set_hidden menu_id false
+  let hide_menu () = set_hidden menu_id true
+  let show_game_ui () = set_hidden game_ui_id false
+  let hide_game_ui () = set_hidden game_ui_id true
+  let show_game_over () = set_hidden game_over_id false
+  let hide_game_over () = set_hidden game_over_id true
+
+  let update_game_over_time elapsed =
+    match get_element game_over_time_id with
     | None -> ()
+    | Some el ->
+        let text = Printf.sprintf "Elapsed time: %.1fs" elapsed in
+        el##.textContent := Js.some (Js.string text)
+
+  let show_game_over_screen elapsed =
+    hide_menu ();
+    hide_game_ui ();
+    update_game_over_time elapsed;
+    show_game_over ()
 
   let format_float value =
     let fractional = abs_float (value -. floor value) in
@@ -1078,6 +1108,14 @@ module%client Menu = struct
     set_input_value berserk_increment_input_id (Settings.get_default_berserk_size_increment ());
     Js._false
 
+  let handle_go_to_menu _ =
+    hide_game_over ();
+    hide_game_ui ();
+    show_menu ();
+    Game_loop.reset_elapsed_time ();
+    Counters.update ~elapsed_time:0. ~speed_increment:0.;
+    Js._false
+
   let handle_play _ =
     let width = parse_dimension width_input_id (Settings.get_map_width ()) in
     let height =
@@ -1115,9 +1153,12 @@ module%client Menu = struct
     Settings.set_berserk_chance berserk_chance;
     Settings.set_mean_chance mean_chance;
     Settings.set_berserk_size_increment berserk_increment;
+    hide_game_over ();
     hide_menu ();
     show_game_ui ();
     World.mount ();
+    Game_loop.reset_elapsed_time ();
+    Counters.update ~elapsed_time:0. ~speed_increment:0.;
     Js._false
 
   let attach_click id handler =
@@ -1140,7 +1181,16 @@ module%client Menu = struct
     set_input_value mean_chance_input_id (Settings.get_mean_chance ());
     set_input_value berserk_increment_input_id (Settings.get_berserk_size_increment ());
     attach_click play_button_id handle_play;
-    attach_click reset_button_id handle_reset
+    attach_click reset_button_id handle_reset;
+    attach_click go_to_menu_button_id handle_go_to_menu
+end
+
+module%client Game_over_screen = struct
+  let handle_no_healthy () =
+    let elapsed = Game_loop.get_elapsed_time () in
+    Menu.show_game_over_screen elapsed
+
+  let () = State.set_on_no_healthy handle_no_healthy
 end
 
 let%client () =
@@ -1319,6 +1369,20 @@ let%shared () =
                        a_id "speed-counter";
                        a_class ["counter"; "counter--speed"];
                      ]
-                     [txt "+0"];
+                    [txt "+0.00"];
                  ];
+              div
+                ~a:[a_id "game-over-screen"; a_class ["game-over"; "hidden"]]
+                [
+                  h2 [txt "Game Over"];
+                  p
+                    ~a:[a_id "game-over-time"; a_class ["game-over__time"]]
+                    [txt "Elapsed time: 0s"];
+                  button
+                    ~a:[
+                      a_id "go-to-menu-button";
+                      a_class ["menu__button"; "menu__button--primary"];
+                    ]
+                    [txt "Go to menu"];
+                ];
              ])))
