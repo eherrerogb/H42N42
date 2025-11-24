@@ -54,7 +54,7 @@ module%client Config = struct
   (* Movement settings *)
   let speed = 60.
   let sick_speed_modifier = 0.85
-  let speed_increment_per_second = 0.01
+  let speed_increment_per_second = 0.5
   
   (* Infection settings *)
   let infection_chance = 2.
