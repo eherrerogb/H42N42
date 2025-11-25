@@ -3,7 +3,7 @@
 (executables
     (names creet_app)
     (modes (byte plugin) (native plugin))
-    (libraries eliom.server ocsipersist.sqlite)
+    (libraries eliom.server ocsipersist.dbm)
     (preprocess
        (pps
            lwt_ppx
