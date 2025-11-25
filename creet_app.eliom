@@ -40,11 +40,8 @@ module%shared Constants = struct
   let initial_map_height = 260. [@@warning "-32"]
   let initial_creet_size = 24.
   let initial_mean_size = 20.
-  let initial_berserk_extra_size = 72.
   let creet_size_ratio = initial_creet_size /. initial_map_width [@@warning "-32"]
   let mean_size_ratio = initial_mean_size /. initial_map_width [@@warning "-32"]
-  let berserk_extra_ratio =
-    initial_berserk_extra_size /. initial_map_width [@@warning "-32"]
 end
 
 module%client Config = struct
@@ -110,8 +107,7 @@ module%client Settings = struct
   let get_speed_increment_per_second () = !speed_increment
   let get_berserk_chance () = !berserk_chance
   let get_mean_chance () = !mean_chance
-  let get_berserk_extra_size () =
-    sized_with_min Constants.berserk_extra_ratio Constants.initial_berserk_extra_size
+  let get_berserk_extra_size () = 3. *. get_creet_size ()
   let get_berserk_size_increment () = !berserk_size_increment
   let get_initial_creet_count () = !initial_creet_count
 
@@ -420,10 +416,6 @@ module%client Creet_runner = struct
       in
       creet.x <- creet.x +. (creet.dir_x *. step);
       creet.y <- creet.y +. (creet.dir_y *. step);
-      let max_x_actual = Settings.get_map_width () -. creet.size in
-      let max_y_actual = Settings.get_map_height () -. creet.size in
-      creet.x <- clamp creet.x 0. max_x_actual;
-      creet.y <- clamp creet.y 0. max_y_actual;
       handle_bounds creet;
       Creet.update_position creet)
 
